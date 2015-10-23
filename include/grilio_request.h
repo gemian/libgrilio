@@ -48,7 +48,7 @@ typedef enum grilio_request_status {
 } GRILIO_REQUEST_STATUS;
 
 GRilIoRequest*
-grilio_request_new();
+grilio_request_new(void);
 
 GRilIoRequest*
 grilio_request_sized_new(
