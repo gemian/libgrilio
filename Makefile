@@ -23,7 +23,14 @@ all: debug release pkgconfig
 
 VERSION_MAJOR = 1
 VERSION_MINOR = 0
-VERSION_RELEASE = 0
+VERSION_RELEASE = 2
+
+# Version for pkg-config
+PCVERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_RELEASE)
+
+#
+# Library name
+#
 
 NAME = grilio
 LIB_NAME = lib$(NAME)
@@ -187,7 +194,7 @@ $(RELEASE_LINK):
 	ln -sf $(LIB) $@
 
 $(PKGCONFIG): $(LIB_NAME).pc.in
-	sed -e 's/\[version\]/'$(VERSION_MAJOR).$(VERSION_MINOR)/g $< > $@
+	sed -e 's/\[version\]/'$(PCVERSION)/g $< > $@
 
 #
 # Install
