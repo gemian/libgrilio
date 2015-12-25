@@ -36,6 +36,7 @@
 #include "grilio_queue.h"
 
 #include "grilio_test_server.h"
+#include "grilio_p.h"
 
 #include <gutil_log.h>
 #include <gutil_macros.h>
@@ -82,7 +83,7 @@ typedef struct test_connected {
 static
 void
 test_connected_event(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     guint code,
     const void* data,
     guint len,
@@ -114,7 +115,7 @@ test_connected_event(
 static
 void
 test_connected_callback(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     void* user_data)
 {
     TestConnected* test = G_CAST(user_data, TestConnected, test);
@@ -168,7 +169,7 @@ test_connected_destroy(
 static
 void
 test_basic_response(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     int status,
     const void* data,
     guint len,
@@ -258,7 +259,7 @@ test_queue_destroy_request(
 static
 void
 test_queue_response(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     int status,
     const void* data,
     guint len,
@@ -279,7 +280,7 @@ test_queue_response(
 static
 void
 test_queue_last_response(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     int status,
     const void* data,
     guint len,
@@ -302,7 +303,7 @@ test_queue_last_response(
 static
 void
 test_queue_first_response(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     int status,
     const void* data,
     guint len,
@@ -439,7 +440,7 @@ test_write_error_init(
 static
 void
 test_eof_handler(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     void* user_data)
 {
     Test* test = user_data;
@@ -464,7 +465,7 @@ test_eof_init(
 static
 void
 test_short_packet_handler(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     const GError* error,
     void* user_data)
 {
@@ -484,6 +485,9 @@ test_short_packet_init(
     grilio_channel_add_error_handler(test->io, test_short_packet_handler, test);
     grilio_test_server_add_data(test->server, &pktlen, sizeof(pktlen));
     grilio_test_server_add_data(test->server, data, sizeof(data));
+    /* These two do nothing (but improve branch coverage): */
+    grilio_channel_add_error_handler(NULL, test_short_packet_handler, NULL);
+    grilio_channel_add_error_handler(test->io, NULL, NULL);
     return TRUE;
 }
 
@@ -501,7 +505,7 @@ typedef struct test_logger {
 static
 void
 test_logger_response(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     int status,
     const void* data,
     guint len,
@@ -513,7 +517,7 @@ test_logger_response(
 static
 void
 test_logger_cb(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     GRILIO_PACKET_TYPE type,
     guint id,
     guint code,
@@ -579,6 +583,162 @@ test_logger_destroy(
 }
 
 /*==========================================================================*
+ * Handlers
+ *==========================================================================*/
+
+#define TEST_HANDLERS_COUNT (2)
+#define TEST_HANDLERS_INC_EVENTS_COUNT (3)
+
+enum test_handlers_event {
+    TEST_HANDLERS_INC_EVENT = 1,
+    TEST_HANDLERS_REMOVE_EVENT,
+    TEST_HANDLERS_DONE_EVENT
+};
+
+typedef struct test_handlers {
+    Test test;
+    int count1;
+    int count2;
+    gulong next_event_id;
+    gulong id1[TEST_HANDLERS_COUNT];
+    gulong id2[TEST_HANDLERS_COUNT];
+} TestHandlers;
+
+static
+void
+test_handlers_submit_event(
+    Test* test,
+    guint code)
+{
+    guint32 buf[3];
+    buf[0] = GUINT32_TO_BE(8);          /* Length */
+    buf[1] = GUINT32_TO_RIL(1);         /* Unsolicited Event */
+    buf[2] = GUINT32_TO_RIL(code);      /* Event code */
+    grilio_test_server_add_data(test->server, buf, sizeof(buf));
+}
+
+static void
+test_handlers_done(
+    GRilIoChannel* io,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    GDEBUG("Done");
+    g_main_loop_quit(test->loop);
+}
+
+static void
+test_handlers_remove(
+    GRilIoChannel* io,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    GASSERT(code == TEST_HANDLERS_REMOVE_EVENT);
+    if (code == TEST_HANDLERS_REMOVE_EVENT) {
+        TestHandlers* h = user_data;
+        Test* test = &h->test;
+        int i;
+
+        GDEBUG("Removing handlers");
+        grilio_channel_remove_handlers(test->io, h->id2, TEST_HANDLERS_COUNT);
+
+        /* Doing it a few more times makes no difference */
+        grilio_channel_remove_handlers(test->io, h->id2, TEST_HANDLERS_COUNT);
+        grilio_channel_remove_handlers(test->io, h->id2, 0);
+        grilio_channel_remove_handlers(test->io, NULL, 0);
+        grilio_channel_remove_handlers(NULL, NULL, 0);
+
+        /* Submit more events. This time they should only increment count1 */
+        for (i=0; i<TEST_HANDLERS_INC_EVENTS_COUNT; i++) {
+            test_handlers_submit_event(test, TEST_HANDLERS_INC_EVENT);
+        }
+
+        /* Once those are handled, stop the test */
+        grilio_channel_remove_handler(test->io, h->next_event_id);
+        h->next_event_id = grilio_channel_add_unsol_event_handler(test->io,
+                test_handlers_done, TEST_HANDLERS_DONE_EVENT, h);
+        test_handlers_submit_event(test, TEST_HANDLERS_DONE_EVENT);
+    }
+}
+
+static void
+test_handlers_inc(
+    GRilIoChannel* io,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    int* count = user_data;
+    GASSERT(code == TEST_HANDLERS_INC_EVENT);
+    if (code == TEST_HANDLERS_INC_EVENT) {
+        (*count)++;
+        GDEBUG("Event %u data %p value %d", code, count, *count);
+    }
+}
+
+static
+gboolean
+test_handlers_init(
+    Test* test)
+{
+    TestHandlers* h = G_CAST(test, TestHandlers, test);
+    int i;
+    for (i=0; i<TEST_HANDLERS_COUNT; i++) {
+        h->id1[i] = grilio_channel_add_unsol_event_handler(test->io,
+            test_handlers_inc, TEST_HANDLERS_INC_EVENT, &h->count1);
+        h->id2[i] = grilio_channel_add_unsol_event_handler(test->io,
+            test_handlers_inc, TEST_HANDLERS_INC_EVENT, &h->count2);
+    }
+    for (i=0; i<TEST_HANDLERS_INC_EVENTS_COUNT; i++) {
+        test_handlers_submit_event(test, TEST_HANDLERS_INC_EVENT);
+    }
+    h->next_event_id = grilio_channel_add_unsol_event_handler(test->io,
+        test_handlers_remove, TEST_HANDLERS_REMOVE_EVENT, h);
+    test_handlers_submit_event(test, TEST_HANDLERS_REMOVE_EVENT);
+    return TRUE;
+}
+
+static
+int
+test_handlers_check(
+    Test* test)
+{
+    TestHandlers* h = G_CAST(test, TestHandlers, test);
+    if (h->count1 == 2*TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT &&
+        h->count2 == TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT) {
+        int i;
+        for (i=0; i<TEST_HANDLERS_COUNT; i++) {
+            GASSERT(!h->id2[i]);
+            if (h->id2[i]) {
+                return RET_ERR;
+            }
+        }
+        return RET_OK;
+    }
+    return RET_ERR;
+}
+
+static
+void
+test_handlers_destroy(
+    Test* test)
+{
+    TestHandlers* h = G_CAST(test, TestHandlers, test);
+    grilio_channel_remove_handlers(test->io, h->id1, TEST_HANDLERS_COUNT);
+    grilio_channel_remove_handlers(test->io, h->id2, TEST_HANDLERS_COUNT);
+    grilio_channel_remove_handler(test->io, h->next_event_id);
+    /* These do nothing: */
+    grilio_channel_remove_handler(test->io, 0);
+    grilio_channel_remove_handler(NULL, 0);
+}
+
+/*==========================================================================*
  * Timeout
  *==========================================================================*/
 
@@ -589,7 +749,6 @@ typedef struct test_timeout {
     guint req_id;
     guint timer_id;
 } TestTimeout;
-
 
 static
 gboolean
@@ -611,7 +770,7 @@ test_timeout_done(
 static
 void
 test_timeout_response(
-    GRilIoChannel* channel,
+    GRilIoChannel* io,
     int status,
     const void* data,
     guint len,
@@ -712,6 +871,12 @@ static const TestDesc all_tests[] = {
         NULL,
         test_logger_destroy
     },{
+        "Handlers",
+        sizeof(TestHandlers),
+        test_handlers_init,
+        test_handlers_check,
+        test_handlers_destroy
+    },{
         "Timeout",
         sizeof(TestTimeout),
         test_timeout_init,
@@ -774,6 +939,7 @@ test_new(
     test->server = server;
     test->io = grilio_channel_new_fd(fd, "SUB1", FALSE);
     grilio_channel_set_name(test->io, "TEST");
+    grilio_channel_set_name(NULL, NULL); /* This one does nothing */
     test->log = grilio_channel_add_default_logger(test->io, GLOG_LEVEL_VERBOSE);
     if (!debug) {
         test->timeout_id = g_timeout_add_seconds(TEST_TIMEOUT,

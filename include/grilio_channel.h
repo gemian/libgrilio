@@ -175,6 +175,12 @@ grilio_channel_remove_handler(
     GRilIoChannel* channel,
     gulong id);
 
+void
+grilio_channel_remove_handlers(
+    GRilIoChannel* channel,
+    gulong *ids,
+    guint count);
+
 guint
 grilio_channel_send_request(
     GRilIoChannel* channel,

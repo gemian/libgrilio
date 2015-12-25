@@ -832,6 +832,23 @@ grilio_channel_remove_handler(
     }
 }
 
+void
+grilio_channel_remove_handlers(
+    GRilIoChannel* self,
+    gulong *ids,
+    guint count)
+{
+    if (G_LIKELY(self) && G_LIKELY(ids) && G_LIKELY(count)) {
+        guint i;
+        for (i=0; i<count; i++) {
+            if (ids[i]) {
+                g_signal_handler_disconnect(self, ids[i]);
+                ids[i] = 0;
+            }
+        }
+    }
+}
+
 guint
 grilio_channel_add_logger(
     GRilIoChannel* self,
