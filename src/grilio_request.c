@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -98,6 +98,25 @@ grilio_request_set_timeout(
     if (G_LIKELY(req)) {
         req->timeout = milliseconds;
     }
+}
+
+void
+grilio_request_set_retry(
+    GRilIoRequest* req,
+    guint milliseconds,
+    int max_retries)
+{
+    if (G_LIKELY(req)) {
+        req->retry_period = milliseconds;
+        req->max_retries = max_retries;
+    }
+}
+
+int
+grilio_request_retry_count(
+    GRilIoRequest* req)
+{
+    return G_LIKELY(req) ? req->retry_count : 0;
 }
 
 GRILIO_REQUEST_STATUS

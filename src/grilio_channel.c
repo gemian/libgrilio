@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -53,7 +53,7 @@ struct grilio_channel_priv {
     guint write_watch_id;
     guint last_req_id;
     guint last_logger_id;
-    GHashTable* resp_table;
+    GHashTable* req_table;
     GSList* log_list;
 
     /* Timeouts */
@@ -65,7 +65,10 @@ struct grilio_channel_priv {
     gchar sub[GRILIO_SUB_LEN];
     guint sub_pos;
 
-    /* Queue */
+    /* Retry queue (sorted) */
+    GRilIoRequest* retry_req;
+
+    /* Send queue */
     GRilIoRequest* first_req;
     GRilIoRequest* last_req;
 
@@ -129,6 +132,11 @@ void
 grilio_channel_reset_timeout(
     GRilIoChannel* self);
 
+static
+void
+grilio_channel_schedule_write(
+    GRilIoChannel* self);
+
 /*==========================================================================*
  * Implementation
  *==========================================================================*/
@@ -154,13 +162,27 @@ grilio_channel_log(
 }
 
 static
+guint
+grilio_channel_generate_req_id(
+    GRilIoChannelPriv* priv)
+{
+    priv->last_req_id++;
+    while (!priv->last_req_id || g_hash_table_contains(priv->req_table,
+           GINT_TO_POINTER(priv->last_req_id))) {
+        priv->last_req_id++;
+    }
+    return priv->last_req_id;
+}
+
+static
 void
 grilio_channel_queue_request(
     GRilIoChannelPriv* queue,
     GRilIoRequest* req)
 {
     GASSERT(!req->next);
-    GASSERT(req->status == GRILIO_REQUEST_NEW);
+    GASSERT(req->status == GRILIO_REQUEST_NEW ||
+            req->status == GRILIO_REQUEST_RETRY);
     req->status = GRILIO_REQUEST_QUEUED;
     if (queue->last_req) {
         queue->last_req->next = req;
@@ -169,7 +191,7 @@ grilio_channel_queue_request(
         GASSERT(!queue->first_req);
         queue->first_req = queue->last_req = req;
     }
-    GVERBOSE("Queued request %u", req->id);
+    GVERBOSE("Queued request %u (%u)", req->id, req->req_id);
 }
 
 static
@@ -190,9 +212,22 @@ grilio_channel_dequeue_request(
             queue->first_req = queue->last_req = NULL;
         }
         req->status = GRILIO_REQUEST_SENDING;
-        GVERBOSE("Sending request %u", req->id);
+        GVERBOSE("Sending request %u (%u)", req->id, req->req_id);
     }
     return req;
+}
+
+static
+void
+grilio_channel_drop_request(
+    GRilIoChannelPriv* priv,
+    GRilIoRequest* req)
+{
+    grilio_queue_remove(req);
+    g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->req_id));
+    if (req->id != req->req_id) {
+        g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->id));
+    }
 }
 
 static
@@ -228,6 +263,48 @@ grilio_channel_handle_eof(
 
 static
 gboolean
+grilio_channel_schedule_retry(
+    GRilIoChannelPriv* priv,
+    GRilIoRequest* req)
+{
+    GASSERT(!req->next);
+    if (grilio_request_can_retry(req)) {
+        req->deadline = g_get_monotonic_time() + req->retry_period;
+        req->status = GRILIO_REQUEST_RETRY;
+
+        /* Remove the request from the request table while it's waiting
+         * for its turn to retry. It means that it gets completed during
+         * this time, we will miss the reply. */
+        grilio_request_ref(req);
+        g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->req_id));
+        if (req->id != req->req_id) {
+            g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->id));
+        }
+
+        GVERBOSE("Retry #%d for request %u in %u ms", req->retry_count+1,
+            req->id, req->retry_period);
+
+        /* Keep the retry queue sorted by deadline */
+        if (priv->retry_req && priv->retry_req->deadline < req->deadline) {
+            GRilIoRequest* prev = priv->retry_req;
+            GRilIoRequest* next = prev->next;
+            while (next && next->deadline < req->deadline) {
+                prev = next;
+                next = prev->next;
+            }
+            prev->next = req;
+            req->next = next;
+        } else {
+            req->next = priv->retry_req;
+            priv->retry_req = req;
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static
+gboolean
 grilio_channel_timeout(
     gpointer user_data)
 {
@@ -236,17 +313,21 @@ grilio_channel_timeout(
     GRilIoRequest* expired = NULL;
     const gint64 now = g_get_monotonic_time();
     GHashTableIter iter;
-    gpointer value;
+    gpointer key, value;
 
     priv->timeout_id = 0;
     priv->next_deadline = 0;
 
-    g_hash_table_iter_init(&iter, priv->resp_table);
-    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+    /* Expired requests */
+    g_hash_table_iter_init(&iter, priv->req_table);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
         GRilIoRequest* req = value;
-        if (req->deadline && req->deadline < now) {
+        if (key == GINT_TO_POINTER(req->req_id) &&
+            req->deadline && req->deadline <= now) {
+            GDEBUG("Request %u (%u) timed out", req->id, req->req_id);
             GASSERT(!req->next);
             req->next = expired;
+            req->deadline = 0;
             expired = grilio_request_ref(req);
         }
     }
@@ -255,13 +336,63 @@ grilio_channel_timeout(
         GRilIoRequest* req = expired;
         expired = req->next;
         req->next = NULL;
-        /* Completion callback may cancel some of the expired requests, so
+        /* Completion callbacks may cancel some of the expired requests, so
          * we need to make sure that they are still there */
-        if (g_hash_table_remove(priv->resp_table, GINT_TO_POINTER(req->id))) {
-            grilio_queue_remove(req);
-            req->response(self, GRILIO_STATUS_TIMEOUT, NULL, 0, req->user_data);
+        if (g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->id))) {
+            if (!grilio_channel_schedule_retry(priv, req)) {
+                grilio_channel_drop_request(priv, req);
+                if (req->response) {
+                    req->response(self, GRILIO_STATUS_TIMEOUT, NULL, 0,
+                        req->user_data);
+                }
+            }
         }
         grilio_request_unref(req);
+    }
+
+    /* Expired retry timeouts */
+    if (priv->retry_req && priv->retry_req->deadline <= now) {
+        /* Slip expired timeout to preserve the order */
+        GRilIoRequest* last = priv->retry_req;
+        while (last->next && last->next->deadline <= now) {
+            last = last->next;
+        }
+        expired = priv->retry_req;
+        priv->retry_req = last->next;
+        last->next = NULL;
+    }
+
+    while (expired) {
+        GRilIoRequest* req = expired;
+        expired = req->next;
+        req->next = NULL;
+
+        GASSERT(!g_hash_table_contains(priv->req_table,
+            GINT_TO_POINTER(req->id)));
+        GASSERT(!g_hash_table_contains(priv->req_table,
+            GINT_TO_POINTER(req->req_id)));
+
+        /* Generate new request id. The first one is kept around because
+         * it was returned to the caller. */
+        req->req_id = grilio_channel_generate_req_id(priv);
+        GASSERT(req->id != req->req_id);
+
+        req->deadline = 0;
+        req->retry_count++;
+
+        if (req->response || grilio_request_can_retry(req)) {
+            /* Stick both public and private ids into the table (for cancel) */
+            g_hash_table_insert(priv->req_table,
+                GINT_TO_POINTER(req->req_id),
+                grilio_request_ref(req));
+            g_hash_table_insert(priv->req_table,
+                GINT_TO_POINTER(req->id),
+                grilio_request_ref(req));
+        }
+
+        GVERBOSE("Queued retry #%d for request %u", req->retry_count, req->id);
+        grilio_channel_queue_request(priv, req);
+        grilio_channel_schedule_write(self);
     }
 
     grilio_channel_reset_timeout(self);
@@ -281,11 +412,20 @@ grilio_channel_reset_timeout(
 
     /* This loop shouldn't impact the performance because the hash table
      * typically contains very few entries */
-    g_hash_table_iter_init(&iter, priv->resp_table);
+    g_hash_table_iter_init(&iter, priv->req_table);
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         GRilIoRequest* req = value;
-        if (req->deadline && (!deadline || deadline > req->deadline)) {
-            deadline = req->deadline;
+        if (req->deadline) {
+            if (!deadline || deadline > req->deadline) {
+                deadline = req->deadline;
+            }
+        }
+    }
+
+    /* Retry requests are sorted */
+    if (priv->retry_req) {
+        if (!deadline || deadline > priv->retry_req->deadline) {
+            deadline = priv->retry_req->deadline;
         }
     }
 
@@ -382,14 +522,16 @@ grilio_channel_write(
     grilio_channel_log(self, GRILIO_PACKET_REQ, req->id, req->code,
         req->bytes->data + 4, req->bytes->len - 4);
 
-    /* If there's no response callback, remove it from the queue as well */
-    if (!req->response) {
+    /* If there's no response callback and no need to retry, remove it
+     * from the queue as well */
+    if (!req->response && !grilio_request_can_retry(req)) {
         grilio_queue_remove(req);
-    } else if (req->timeout > 0 ||
-              (priv->timeout > 0 && req->timeout == GRILIO_TIMEOUT_DEFAULT)) {
+    }
+    if ((req->timeout > 0) ||
+        (priv->timeout > 0 && req->timeout == GRILIO_TIMEOUT_DEFAULT)) {
         /* This request has a timeout */
         req->deadline = g_get_monotonic_time() +
-            ((req->timeout == GRILIO_TIMEOUT_DEFAULT) ?
+            (gint64)((req->timeout == GRILIO_TIMEOUT_DEFAULT) ?
              priv->timeout : req->timeout) * 1000;
         if (!priv->next_deadline || req->deadline < priv->next_deadline) {
             grilio_channel_reset_timeout(self);
@@ -483,7 +625,7 @@ grilio_channel_handle_packet(
             /* RIL Solicited Response */
             const guint32 id = GUINT32_FROM_RIL(buf[1]);
             const guint32 status = GUINT32_FROM_RIL(buf[2]);
-            GRilIoRequest* req = g_hash_table_lookup(priv->resp_table,
+            GRilIoRequest* req = g_hash_table_lookup(priv->req_table,
                 GINT_TO_POINTER(id));
 
             /* Logger receives everything except the length */
@@ -491,14 +633,22 @@ grilio_channel_handle_packet(
                 priv->read_buf, priv->read_len);
 
             if (req) {
-                /* We have a response callback */
-                GASSERT(req->id == id);
-                GASSERT(req->response);
+                GASSERT(req->req_id == id);
+                /* Temporary increment the ref count to compensate for
+                 * g_hash_table_remove possibly unreferencing the request */
                 grilio_request_ref(req);
-                grilio_queue_remove(req);
-                g_hash_table_remove(priv->resp_table, GINT_TO_POINTER(id));
-                req->response(self, status, priv->read_buf + 12,
-                    priv->read_len - 12, req->user_data);
+                if (status != RIL_E_SUCCESS &&
+                    grilio_channel_schedule_retry(priv, req)) {
+                    /* Will retry, keep it around */
+                    grilio_channel_reset_timeout(self);
+                } else {
+                    grilio_channel_drop_request(priv, req);
+                    if (req->response) {
+                        req->response(self, status, priv->read_buf + 12,
+                            priv->read_len - 12, req->user_data);
+                    }
+                }
+                /* Release temporary reference */
                 grilio_request_unref(req);
             }
             return TRUE;
@@ -913,18 +1063,16 @@ grilio_channel_send_request_full(
     if (G_LIKELY(self && (!req || req->status == GRILIO_REQUEST_NEW))) {
         GRilIoChannelPriv* priv = self->priv;
         GRilIoRequest* internal_req = NULL;
-        guint id;
-        priv->last_req_id++;
-        if (!priv->last_req_id) priv->last_req_id++;
+        const guint id = grilio_channel_generate_req_id(priv);
         if (!req) req = internal_req = grilio_request_new();
-        req->id = id = priv->last_req_id;
+        req->id = req->req_id = id;
         req->code = code;
         req->response = response;
         req->destroy = destroy;
         req->user_data = user_data;
-        if (response) {
-            g_hash_table_insert(priv->resp_table,
-                GINT_TO_POINTER(req->id),
+        if (response || grilio_request_can_retry(req)) {
+            g_hash_table_insert(priv->req_table,
+                GINT_TO_POINTER(req->req_id),
                 grilio_request_ref(req));
         }
         grilio_request_ref(req);
@@ -947,10 +1095,14 @@ grilio_channel_get_request(
         if (priv->send_req && priv->send_req->id == id) {
             req = priv->send_req;
         } else {
-            req = g_hash_table_lookup(priv->resp_table, GINT_TO_POINTER(id));
+            req = g_hash_table_lookup(priv->req_table, GINT_TO_POINTER(id));
             if (!req) {
                 req = priv->first_req;
                 while (req && req->id != id) req = req->next;
+                if (!req) {
+                    req = priv->retry_req;
+                    while (req && req->id != id) req = req->next;
+                }
             }
         }
     }
@@ -967,19 +1119,19 @@ grilio_channel_cancel_request(
         GRilIoChannelPriv* priv = self->priv;
         GRilIoRequest* req;
         if (priv->send_req && priv->send_req->id == id) {
-            req = priv->send_req;
             /* Current request will be unreferenced after it's sent */
-            grilio_queue_remove(req);
-            g_hash_table_remove(priv->resp_table, GINT_TO_POINTER(id));
+            req = priv->send_req;
             if (req->status != GRILIO_REQUEST_CANCELLED) {
                 req->status = GRILIO_REQUEST_CANCELLED;
+                grilio_channel_drop_request(priv, req);
                 if (notify && req->response) {
                     req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
                         req->user_data);
                 }
+                return TRUE;
+            } else {
+                return FALSE;
             }
-            grilio_request_unref(req);
-            return TRUE;
         } else {
             GRilIoRequest* prev = NULL;
             for (req = priv->first_req; req; req = req->next) {
@@ -995,8 +1147,7 @@ grilio_channel_cancel_request(
                     } else {
                         priv->last_req = prev;
                     }
-                    grilio_queue_remove(req);
-                    g_hash_table_remove(priv->resp_table, GINT_TO_POINTER(id));
+                    grilio_channel_drop_request(priv, req);
                     req->status = GRILIO_REQUEST_CANCELLED;
                     if (notify && req->response) {
                         req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
@@ -1011,21 +1162,45 @@ grilio_channel_cancel_request(
 
         /* Request not found but it could've been already sent and be setting
          * in the hashtable waiting for response */
-        req = g_hash_table_lookup(priv->resp_table, GINT_TO_POINTER(id));
+        req = g_hash_table_lookup(priv->req_table, GINT_TO_POINTER(id));
         if (req) {
             /* We need this extra temporary reference because the hash table
              * may be holding the last one, i.e. removing request from 
              * hash table may deallocate the request */
             grilio_request_ref(req);
-            grilio_queue_remove(req);
-            g_hash_table_remove(priv->resp_table, GINT_TO_POINTER(id));
+            grilio_channel_drop_request(priv, req);
             req->status = GRILIO_REQUEST_CANCELLED;
             if (notify && req->response) {
                 req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
                     req->user_data);
             }
             grilio_request_unref(req);
+            grilio_channel_reset_timeout(self);
             return TRUE;
+        } else {
+            /* The last place where it could be is the retry queue */
+            GRilIoRequest* prev = NULL;
+            for (req = priv->retry_req; req; req = req->next) {
+                if (req->id == id) {
+                    GDEBUG("Cancelled request %u", id);
+                    if (prev) {
+                        prev->next = req->next;
+                    } else {
+                        priv->retry_req = req->next;
+                    }
+                    req->next = NULL;
+                    req->status = GRILIO_REQUEST_CANCELLED;
+                    grilio_channel_drop_request(priv, req);
+                    if (notify && req->response) {
+                        req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
+                            req->user_data);
+                    }
+                    grilio_request_unref(req);
+                    grilio_channel_reset_timeout(self);
+                    return TRUE;
+                }
+                prev = req;
+            }
         }
     }
     return FALSE;
@@ -1038,13 +1213,14 @@ grilio_channel_cancel_all(
 {
     if (G_LIKELY(self)) {
         GRilIoChannelPriv* priv = self->priv;
+        GRilIoRequest* req;
         GList* ids;
         if (priv->send_req) {
-            /* Cancel current request */
-            GRilIoRequest* req = priv->send_req;
+            /* Current request will be unreferenced after it's sent */
+            req = priv->send_req;
             if (req->status != GRILIO_REQUEST_CANCELLED) {
                 req->status = GRILIO_REQUEST_CANCELLED;
-                grilio_queue_remove(req);
+                grilio_channel_drop_request(priv, req);
                 if (notify && req->response) {
                     req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
                         req->user_data);
@@ -1053,10 +1229,9 @@ grilio_channel_cancel_all(
         }
         /* Cancel queued requests */
         while (priv->first_req) {
-            GRilIoRequest* req = priv->first_req;
+            req = priv->first_req;
             GDEBUG("Cancelled request %u", req->id);
-            grilio_queue_remove(req);
-            g_hash_table_remove(priv->resp_table, GINT_TO_POINTER(req->id));
+            grilio_channel_drop_request(priv, req);
             priv->first_req = req->next;
             if (req->next) {
                 req->next = NULL;
@@ -1073,22 +1248,37 @@ grilio_channel_cancel_all(
         }
         /* Cancel the requests that we have sent which but haven't been
          * replied yet */
-        ids = g_hash_table_get_keys(priv->resp_table);
+        ids = g_hash_table_get_keys(priv->req_table);
         if (ids) {
             GList* link = ids;
             while (link) {
-                GRilIoRequest* req;
-                req = g_hash_table_lookup(priv->resp_table, link->data);
-                GASSERT(req->id == GPOINTER_TO_INT(link->data));
-                GASSERT(req->response);
-                grilio_queue_remove(req);
-                g_hash_table_steal(priv->resp_table, link->data);
-                req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
-                    req->user_data);
-                grilio_request_unref(req);
+                req = g_hash_table_lookup(priv->req_table, link->data);
+                if (req) {
+                    grilio_request_ref(req);
+                    grilio_channel_drop_request(priv, req);
+                    if (req->response) {
+                        req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
+                            req->user_data);
+                    }
+                    grilio_request_unref(req);
+                }
                 link = link->next;
             }
             g_list_free(ids);
+        }
+        /* And the retry queue */
+        while (priv->retry_req) {
+            req = priv->retry_req;
+            GDEBUG("Cancelled request %u", req->id);
+            grilio_channel_drop_request(priv, req);
+            priv->retry_req = req->next;
+            req->next = NULL;
+            if (notify && req->response) {
+                req->status = GRILIO_REQUEST_CANCELLED;
+                req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
+                    req->user_data);
+            }
+            grilio_request_unref(req);
         }
         /* We no longer need the timer */
         if (priv->timeout_id) {
@@ -1113,7 +1303,7 @@ grilio_channel_init(
 {
     GRilIoChannelPriv* priv = G_TYPE_INSTANCE_GET_PRIVATE(self,
         GRILIO_CHANNEL_TYPE, GRilIoChannelPriv);
-    priv->resp_table = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+    priv->req_table = g_hash_table_new_full(g_direct_hash, g_direct_equal,
         NULL, grilio_request_unref_proc);
     priv->timeout = GRILIO_TIMEOUT_NONE;
     self->priv = priv;
@@ -1130,8 +1320,13 @@ grilio_channel_dispose(
     GObject* object)
 {
     GRilIoChannel* self = GRILIO_CHANNEL(object);
+    GRilIoChannelPriv* priv = self->priv;
     grilio_channel_shutdown(self, FALSE);
     grilio_channel_cancel_all(self, TRUE);
+    if (priv->send_req) {
+        grilio_request_unref(priv->send_req);
+        priv->send_req = NULL;
+    }
     G_OBJECT_CLASS(grilio_channel_parent_class)->dispose(object);
 }
 
@@ -1151,7 +1346,7 @@ grilio_channel_finalize(
     GASSERT(!priv->io_channel);
     g_free(priv->name);
     g_free(priv->read_buf);
-    g_hash_table_unref(priv->resp_table);
+    g_hash_table_unref(priv->req_table);
     g_slist_free_full(priv->log_list, g_free);
     G_OBJECT_CLASS(grilio_channel_parent_class)->finalize(object);
 }

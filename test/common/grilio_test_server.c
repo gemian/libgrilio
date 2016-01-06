@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -124,7 +124,7 @@ gboolean
 grilio_test_server_read(
     GRilIoTestServer* server)
 {
-    GError* error = NULL;;
+    GError* error = NULL;
     gsize bytes_read;
     if (server->sub_len < 4) {
         bytes_read = 0;

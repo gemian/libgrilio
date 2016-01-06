@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -44,7 +44,8 @@ typedef enum grilio_request_status {
     GRILIO_REQUEST_SENDING,
     GRILIO_REQUEST_SENT,
     GRILIO_REQUEST_CANCELLED,
-    GRILIO_REQUEST_DONE
+    GRILIO_REQUEST_DONE,
+    GRILIO_REQUEST_RETRY
 } GRILIO_REQUEST_STATUS;
 
 GRilIoRequest*
@@ -67,6 +68,16 @@ grilio_request_set_timeout(
     GRilIoRequest* request,
     int milliseconds);
 
+void
+grilio_request_set_retry(
+    GRilIoRequest* request,
+    guint milliseconds,
+    int max_retries);
+
+int
+grilio_request_retry_count(
+    GRilIoRequest* request);
+
 GRILIO_REQUEST_STATUS
 grilio_request_status(
     GRilIoRequest* request);
@@ -74,6 +85,8 @@ grilio_request_status(
 guint
 grilio_request_id(
     GRilIoRequest* request);
+
+/* Building the request */
 
 void
 grilio_request_append_byte(

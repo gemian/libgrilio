@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -43,6 +43,10 @@
 #define GUINT32_FROM_RIL(x) (x) /* GUINT32_FROM_LE(x) ? */
 #define GUINT32_TO_RIL(x)   (x) /* GUINT32_TO_LE(x) ? */
 
+/* RIL constants */
+#define GRILIO_REQUEST_HEADER_SIZE (12)
+#define RIL_E_SUCCESS (0)
+
 /*
  * 12 bytes are reserved for the packet header:
  *
@@ -50,15 +54,17 @@
  * [1] Request code
  * [2] Request id 
  */
-#define GRILIO_REQUEST_HEADER_SIZE (12)
-
 struct grilio_request {
     int refcount;
     int timeout;
     guint32 code;
     guint id;
+    guint req_id;
     gint64 deadline;
     GRILIO_REQUEST_STATUS status;
+    int max_retries;
+    int retry_count;
+    guint retry_period;
     GByteArray* bytes;
     GRilIoRequest* next;
     GRilIoRequest* qnext;
@@ -80,6 +86,11 @@ GRilIoRequest*
 grilio_channel_get_request(
     GRilIoChannel* channel,
     guint id);
+
+G_INLINE_FUNC gboolean
+grilio_request_can_retry(GRilIoRequest* req)
+    { return G_LIKELY(req) && (req->max_retries < 0 ||
+                               req->max_retries > req->retry_count); }
 
 #endif /* GRILIO_PRIVATE_H */
 
