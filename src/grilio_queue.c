@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -186,8 +186,6 @@ grilio_queue_cancel_request(
         GRilIoRequest* req = grilio_channel_get_request(queue->channel, id);
         if (req && req->queue == queue) {
             ok = grilio_channel_cancel_request(queue->channel, id, notify);
-            /* grilio_channel_cancel_request will remove it from the queue */
-            GASSERT(!req->queue);
             GASSERT(ok);
         }
     }
