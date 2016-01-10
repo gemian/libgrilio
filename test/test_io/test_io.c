@@ -47,7 +47,7 @@
 
 #define TEST_TIMEOUT (10) /* seconds */
 
-#define RIL_REQUEST_BASEBAND_VERSION 51
+#define RIL_REQUEST_TEST 51
 #define RIL_UNSOL_RIL_CONNECTED 1034
 #define RIL_E_GENERIC_FAILURE 2
 
@@ -204,7 +204,7 @@ test_basic_request(
     GRilIoChannelResponseFunc response)
 {
     return grilio_channel_send_request_full(test->io, NULL,
-        RIL_REQUEST_BASEBAND_VERSION, response, NULL, test);
+        RIL_REQUEST_TEST, response, NULL, test);
 }
 
 static
@@ -347,41 +347,41 @@ test_queue_init(
 
     /* This entire queue will be cancelled */
     grilio_queue_send_request_full(queue->queue[1], NULL,
-        RIL_REQUEST_BASEBAND_VERSION, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, test);
     grilio_queue_send_request_full(queue->queue[1], NULL,
-        RIL_REQUEST_BASEBAND_VERSION, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, test);
 
     /* This one will invoke test_queue_destroy when cancedl which will
      * increment destroy_count */
     grilio_queue_send_request_full(queue->queue[1], NULL,
-        RIL_REQUEST_BASEBAND_VERSION, test_queue_response,
+        RIL_REQUEST_TEST, test_queue_response,
         test_queue_destroy_request, test);
 
     /* Cancel request without callback */
     grilio_queue_cancel_request(queue->queue[1],
         grilio_queue_send_request(queue->queue[1], NULL,
-            RIL_REQUEST_BASEBAND_VERSION), FALSE);
+            RIL_REQUEST_TEST), FALSE);
 
     /* This one will be cancelled impplicitely, when queue will get
      * deallocated. Callbacks won't be notified. */
     grilio_queue_send_request_full(queue->queue[2], NULL,
-        RIL_REQUEST_BASEBAND_VERSION, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, test);
     grilio_queue_send_request_full(queue->queue[2], NULL,
-        RIL_REQUEST_BASEBAND_VERSION, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, test);
     grilio_queue_send_request_full(queue->queue[2], NULL,
-        RIL_REQUEST_BASEBAND_VERSION, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, test);
     grilio_queue_send_request(queue->queue[2], NULL,
-        RIL_REQUEST_BASEBAND_VERSION);
+        RIL_REQUEST_TEST);
 
     /* This one will succeed */
     test_basic_response_ok(test->server, "QUEUE_TEST",
         grilio_queue_send_request_full(queue->queue[0], NULL,
-            RIL_REQUEST_BASEBAND_VERSION, test_queue_first_response,
+            RIL_REQUEST_TEST, test_queue_first_response,
             NULL, test));
 
     /* This one from queue 0 will be cancelled too */
     queue->cancel_id = grilio_queue_send_request_full(queue->queue[0], NULL,
-        RIL_REQUEST_BASEBAND_VERSION, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, test);
     test_basic_response_ok(test->server, "CANCEL", queue->cancel_id);
     return TRUE;
 }
@@ -438,7 +438,7 @@ test_write_error1(
     grilio_test_server_shutdown(test->server);
     /* This should result in test_write_error getting invoked */
     grilio_channel_add_error_handler(test->io, test_write_error, test);
-    grilio_channel_send_request(io, NULL, RIL_REQUEST_BASEBAND_VERSION);
+    grilio_channel_send_request(io, NULL, RIL_REQUEST_TEST);
 }
 
 static
@@ -452,7 +452,7 @@ test_write_error2(
     grilio_test_server_shutdown(test->server);
     /* This should result in test_write_error getting invoked */
     grilio_channel_add_error_handler(test->io, test_write_error, test);
-    id = grilio_channel_send_request(io, NULL, RIL_REQUEST_BASEBAND_VERSION);
+    id = grilio_channel_send_request(io, NULL, RIL_REQUEST_TEST);
     /* The first cancel should succeed, the second one fail */
     if (!grilio_channel_cancel_request(io, id, TRUE) ||
         grilio_channel_cancel_request(io, id, TRUE) ||
@@ -474,7 +474,7 @@ test_write_error3(
     /* This should result in test_write_error getting invoked */
     grilio_channel_add_error_handler(test->io, test_write_error, test);
     id = grilio_channel_send_request_full(io, NULL,
-        RIL_REQUEST_BASEBAND_VERSION, test_write_completion, NULL, test);
+        RIL_REQUEST_TEST, test_write_completion, NULL, test);
     /* The first cancel should succeed, the second one fail */
     if (!grilio_channel_cancel_request(io, id, TRUE) ||
         grilio_channel_cancel_request(io, id, TRUE) ||
@@ -617,11 +617,11 @@ test_logger_cb(
 
     /*
      * Out:
-     * 8 bytes RIL_REQUEST_BASEBAND_VERSION request
+     * 8 bytes RIL_REQUEST_TEST request
      *
      * In:
      * 16 bytes RIL_UNSOL_RIL_CONNECTED response
-     * 32 bytes RIL_REQUEST_BASEBAND_VERSION
+     * 32 bytes RIL_REQUEST_TEST
      */
     if (log->bytes_in == (16 + 32) && log->bytes_out == 8) {
         log->test.ret = RET_OK;
@@ -820,7 +820,7 @@ test_handlers_destroy(
 }
 
 /*==========================================================================*
- * Retry
+ * Retry1
  *
  * We create 3 requests - #1 with request timeout and retry, #2 with one
  * retries and no request timeout and #3 with infinite number of retries
@@ -832,7 +832,7 @@ test_handlers_destroy(
  * complete with error and cancel #3. We expect reply count for #3 to be 1
  *==========================================================================*/
 
-typedef struct test_retry {
+typedef struct test_retry1 {
     Test test;
     int req2_status;
     int req3_completed;
@@ -845,11 +845,11 @@ typedef struct test_retry {
     GRilIoRequest* req4;
     GRilIoRequest* req5;
     GRilIoRequest* req6;
-} TestRetry;
+} TestRetry1;
 
 static
 void
-test_retry_continue(
+test_retry1_continue(
     GRilIoChannel* io,
     int status,
     const void* data,
@@ -857,7 +857,7 @@ test_retry_continue(
     void* user_data)
 {
     Test* test = user_data;
-    TestRetry* retry = G_CAST(test, TestRetry, test);
+    TestRetry1* retry = G_CAST(test, TestRetry1, test);
 
     /* This should result in req2 getting completed */
     GDEBUG("Continuing...");
@@ -867,7 +867,7 @@ test_retry_continue(
 
 static
 void
-test_retry_req1_timeout(
+test_retry1_req1_timeout(
     GRilIoChannel* io,
     int status,
     const void* data,
@@ -878,13 +878,13 @@ test_retry_req1_timeout(
     GDEBUG("Request 1 completed with status %d", status);
     if (status == GRILIO_STATUS_TIMEOUT) {
         test_basic_response_ok(test->server, "TEST",
-            test_basic_request(test, test_retry_continue));
+            test_basic_request(test, test_retry1_continue));
     }
 }
 
 static
 void
-test_retry_req2_completion(
+test_retry1_req2_completion(
     GRilIoChannel* io,
     int status,
     const void* data,
@@ -892,7 +892,7 @@ test_retry_req2_completion(
     void* user_data)
 {
     Test* test = user_data;
-    TestRetry* retry = G_CAST(test, TestRetry, test);
+    TestRetry1* retry = G_CAST(test, TestRetry1, test);
     retry->req2_status = status;
     GDEBUG("Request 2 completed with status %d", status);
     if (!retry->req3_completed) {
@@ -909,7 +909,7 @@ test_retry_req2_completion(
 
 static
 void
-test_retry_count_completions(
+test_retry1_count_completions(
     GRilIoChannel* io,
     int status,
     const void* data,
@@ -922,28 +922,28 @@ test_retry_count_completions(
 
 static
 void
-test_retry_start(
+test_retry1_start(
     GRilIoChannel* io,
     void* user_data)
 {
     Test* test = user_data;
-    TestRetry* retry = G_CAST(test, TestRetry, test);
+    TestRetry1* retry = G_CAST(test, TestRetry1, test);
 
     grilio_channel_send_request_full(test->io, retry->req1,
-        RIL_REQUEST_BASEBAND_VERSION, test_retry_req1_timeout, NULL, test);
+        RIL_REQUEST_TEST, test_retry1_req1_timeout, NULL, test);
     grilio_channel_send_request_full(test->io, retry->req2,
-        RIL_REQUEST_BASEBAND_VERSION, test_retry_req2_completion, NULL, test);
+        RIL_REQUEST_TEST, test_retry1_req2_completion, NULL, test);
     grilio_channel_send_request_full(test->io, retry->req3,
-        RIL_REQUEST_BASEBAND_VERSION, test_retry_count_completions, NULL,
+        RIL_REQUEST_TEST, test_retry1_count_completions, NULL,
         &retry->req3_completed);
     grilio_channel_send_request_full(test->io, retry->req4,
-        RIL_REQUEST_BASEBAND_VERSION, test_retry_count_completions, NULL,
+        RIL_REQUEST_TEST, test_retry1_count_completions, NULL,
         &retry->req4_completed);
     grilio_channel_send_request_full(test->io, retry->req5,
-        RIL_REQUEST_BASEBAND_VERSION, test_retry_count_completions, NULL,
+        RIL_REQUEST_TEST, test_retry1_count_completions, NULL,
         &retry->req5_completed);
     grilio_channel_send_request_full(test->io, retry->req6,
-        RIL_REQUEST_BASEBAND_VERSION, test_retry_count_completions, NULL,
+        RIL_REQUEST_TEST, test_retry1_count_completions, NULL,
         &retry->req6_completed);
 
     grilio_test_server_add_response(test->server, NULL,
@@ -961,10 +961,10 @@ test_retry_start(
 
 static
 gboolean
-test_retry_init(
+test_retry1_init(
     Test* test)
 {
-    TestRetry* retry = G_CAST(test, TestRetry, test);
+    TestRetry1* retry = G_CAST(test, TestRetry1, test);
 
     retry->req1 = grilio_request_new();
     retry->req2 = grilio_request_new();
@@ -982,16 +982,16 @@ test_retry_init(
     grilio_request_set_retry(retry->req6, INT_MAX, -1);
 
     GASSERT(!test->io->connected);
-    grilio_channel_add_connected_handler(test->io, test_retry_start, test);
+    grilio_channel_add_connected_handler(test->io, test_retry1_start, test);
     return TRUE;
 }
 
 static
 int
-test_retry_check(
+test_retry1_check(
     Test* test)
 {
-    TestRetry* retry = G_CAST(test, TestRetry, test);
+    TestRetry1* retry = G_CAST(test, TestRetry1, test);
     if (grilio_request_status(retry->req4) != GRILIO_REQUEST_RETRY) {
         GDEBUG("Unexpected request 4 status %d",
             grilio_request_status(retry->req4));
@@ -1044,16 +1044,133 @@ test_retry_check(
 
 static
 void
-test_retry_destroy(
+test_retry1_destroy(
     Test* test)
 {
-    TestRetry* retry = G_CAST(test, TestRetry, test);
+    TestRetry1* retry = G_CAST(test, TestRetry1, test);
     grilio_request_unref(retry->req1);
     grilio_request_unref(retry->req2);
     grilio_request_unref(retry->req3);
     grilio_request_unref(retry->req4);
     grilio_request_unref(retry->req5);
     grilio_request_unref(retry->req6);
+}
+
+/*==========================================================================*
+ * Retry2
+ *
+ * Makes sure that request ids are incremented on each retry. Two requests
+ * are rejected, the third one times out.
+ *==========================================================================*/
+
+typedef struct test_retry2 {
+    Test test;
+    guint log_id;
+    guint req_id;
+    GRilIoRequest* req;
+} TestRetry2;
+
+static
+void
+test_retry2_req_done(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestRetry2* retry = G_CAST(test, TestRetry2, test);
+    GDEBUG("Request %u completed with status %d",
+        grilio_request_id(retry->req), status);
+    if (status == RIL_E_GENERIC_FAILURE) {
+        g_main_loop_quit(test->loop);
+    }
+}
+
+static
+void
+test_retry2_log(
+    GRilIoChannel* channel,
+    GRILIO_PACKET_TYPE type,
+    guint id,
+    guint code,
+    const void* data,
+    guint data_len,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestRetry2* retry = G_CAST(test, TestRetry2, test);
+    if (type == GRILIO_PACKET_REQ) {
+        if (!retry->req_id) {
+            GDEBUG("No request id yet, assuming %u", id);
+            retry->req_id = id;
+        } else {
+            retry->req_id++;
+            GASSERT(retry->req_id == id);
+        }
+        if (retry->req_id == id) {
+            GDEBUG("Failing request %u", id);
+            grilio_test_server_add_response(test->server, NULL, id,
+                RIL_E_GENERIC_FAILURE);
+        }
+    }
+}
+
+static
+void
+test_retry2_start(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestRetry2* retry = G_CAST(test, TestRetry2, test);
+
+    retry->req_id = grilio_channel_send_request_full(test->io, retry->req,
+        RIL_REQUEST_TEST, test_retry2_req_done, NULL, test);
+}
+
+static
+gboolean
+test_retry2_init(
+    Test* test)
+{
+    TestRetry2* retry = G_CAST(test, TestRetry2, test);
+
+    retry->log_id = grilio_channel_add_logger(test->io, test_retry2_log, test);
+    retry->req = grilio_request_new();
+    grilio_request_set_retry(retry->req, 10, 2);
+
+    GASSERT(!test->io->connected);
+    grilio_channel_add_connected_handler(test->io, test_retry2_start, test);
+    return TRUE;
+}
+
+static
+int
+test_retry2_check(
+    Test* test)
+{
+    TestRetry2* retry = G_CAST(test, TestRetry2, test);
+    if (grilio_request_retry_count(retry->req) != 2) {
+        GDEBUG("Unexpected request retry count %d",
+            grilio_request_retry_count(retry->req));
+    } else {
+        return RET_OK;
+    }
+    return RET_ERR;
+}
+
+static
+void
+test_retry2_destroy(
+    Test* test)
+{
+    TestRetry2* retry = G_CAST(test, TestRetry2, test);
+    guint id = grilio_request_id(retry->req);
+    grilio_channel_cancel_request(test->io, id, FALSE);
+    grilio_request_unref(retry->req);
+    grilio_channel_remove_logger(test->io, retry->log_id);
 }
 
 /*==========================================================================*
@@ -1117,9 +1234,9 @@ test_timeout_submit_requests(
     grilio_request_set_timeout(req2, INT_MAX);
 
     grilio_channel_send_request_full(test->io, req1,
-        RIL_REQUEST_BASEBAND_VERSION, fn, NULL, test);
+        RIL_REQUEST_TEST, fn, NULL, test);
     timeout->req_id = grilio_channel_send_request_full(test->io, req2,
-        RIL_REQUEST_BASEBAND_VERSION, test_timeout_response, NULL, test);
+        RIL_REQUEST_TEST, test_timeout_response, NULL, test);
     grilio_request_unref(req1);
     grilio_request_unref(req2);
 }
@@ -1227,11 +1344,17 @@ static const TestDesc all_tests[] = {
         test_handlers_check,
         test_handlers_destroy
     },{
-        "Retry",
-        sizeof(TestRetry),
-        test_retry_init,
-        test_retry_check,
-        test_retry_destroy
+        "Retry1",
+        sizeof(TestRetry1),
+        test_retry1_init,
+        test_retry1_check,
+        test_retry1_destroy
+    },{
+        "Retry2",
+        sizeof(TestRetry2),
+        test_retry2_init,
+        test_retry2_check,
+        test_retry2_destroy
     },{
         "Timeout",
         sizeof(TestTimeout),
