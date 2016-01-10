@@ -485,7 +485,7 @@ grilio_channel_write(
             guint32* header = (guint32*)req->bytes->data;
             header[0] = GINT32_TO_BE(req->bytes->len - 4);
             header[1] = GUINT32_TO_RIL(req->code);
-            header[2] = GUINT32_TO_RIL(req->id);
+            header[2] = GUINT32_TO_RIL(req->req_id);
             priv->send_pos = 0;
         } else {
             /* There is nothing to send, remove the watch */
@@ -519,7 +519,7 @@ grilio_channel_write(
         GASSERT(req->status == GRILIO_REQUEST_CANCELLED);
     }
 
-    grilio_channel_log(self, GRILIO_PACKET_REQ, req->id, req->code,
+    grilio_channel_log(self, GRILIO_PACKET_REQ, req->req_id, req->code,
         req->bytes->data + 4, req->bytes->len - 4);
 
     /* If there's no response callback and no need to retry, remove it
