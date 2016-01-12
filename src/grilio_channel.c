@@ -42,6 +42,9 @@
 #define GRILIO_MAX_PACKET_LEN (0x8000)
 #define GRILIO_SUB_LEN (4)
 
+/* Miliseconds to microseconds */
+#define MICROSEC(ms) (((gint64)(ms)) * 1000)
+
 /* Log module */
 GLOG_MODULE_DEFINE("grilio");
 
@@ -269,7 +272,7 @@ grilio_channel_schedule_retry(
 {
     GASSERT(!req->next);
     if (grilio_request_can_retry(req)) {
-        req->deadline = g_get_monotonic_time() + req->retry_period;
+        req->deadline = g_get_monotonic_time() + MICROSEC(req->retry_period);
         req->status = GRILIO_REQUEST_RETRY;
 
         /* Remove the request from the request table while it's waiting
@@ -530,9 +533,9 @@ grilio_channel_write(
     if ((req->timeout > 0) ||
         (priv->timeout > 0 && req->timeout == GRILIO_TIMEOUT_DEFAULT)) {
         /* This request has a timeout */
-        req->deadline = g_get_monotonic_time() +
-            (gint64)((req->timeout == GRILIO_TIMEOUT_DEFAULT) ?
-             priv->timeout : req->timeout) * 1000;
+        const int ms = (req->timeout == GRILIO_TIMEOUT_DEFAULT) ?
+            priv->timeout : req->timeout;
+        req->deadline = g_get_monotonic_time() + MICROSEC(ms);
         if (!priv->next_deadline || req->deadline < priv->next_deadline) {
             grilio_channel_reset_timeout(self);
         }
