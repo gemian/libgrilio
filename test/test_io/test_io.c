@@ -1174,6 +1174,168 @@ test_retry2_destroy(
 }
 
 /*==========================================================================*
+ * Retry3
+ *
+ * Makes sure that we don't retry pending request.
+ *
+ * 1. Create request with a long response and retry timeouts and 1 retry
+ * 2. Reply to it with an error, it gets scheduled for retry
+ * 3. Call grilio_channel_retry_request, it should be retried immediately
+ * 4. Call grilio_channel_retry_request again. It should fail.
+ *
+ * The same thing is done with 2 requests to improve the coverage.
+ *
+ *==========================================================================*/
+
+typedef struct test_retry3 {
+    Test test;
+    guint dummy_id;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+    int status1;
+    int status2;
+} TestRetry3;
+
+static
+void
+test_retry3_req_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    int* completion_status = user_data;
+    GDEBUG("Request completed with status %d", status);
+    *completion_status = status;
+}
+
+static
+gboolean
+test_retry3_check_req(
+    GRilIoChannel* io,
+    GRilIoRequest* req,
+    guint dummy_id)
+{
+    const guint id = grilio_request_id(req);
+    if (grilio_channel_retry_request(io, dummy_id)) {
+        GDEBUG("Retry with dummy id unexpectedly succeeded");
+    } else if (!grilio_channel_retry_request(io, id)) {
+        GDEBUG("Failed to retry");
+    } else if (grilio_channel_retry_request(io, id)) {
+        GDEBUG("Second retry unexpectedly succeeded");
+    } else if (grilio_channel_retry_request(io, dummy_id)) {
+        GDEBUG("Retry with dummy id unexpectedly succeeded");
+    } else if (!grilio_channel_cancel_request(io, id, TRUE)) {
+        GDEBUG("Failed to cancel");
+    } else {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static
+void
+test_retry3_retry_and_cancel(
+    GRilIoChannel* io,
+    int error,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestRetry3* retry = G_CAST(test, TestRetry3, test);
+    if (error) {
+        GDEBUG("Unexpected completion status %d", error);
+    } else {
+        if (test_retry3_check_req(io, retry->req1, retry->dummy_id) &&
+            test_retry3_check_req(io, retry->req2, retry->dummy_id)) {
+            /* All good, done with the test */
+            g_main_loop_quit(test->loop);
+        }
+    }
+}
+
+static
+void
+test_retry3_start(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestRetry3* retry = G_CAST(test, TestRetry3, test);
+
+    grilio_channel_send_request_full(test->io, retry->req1,
+        RIL_REQUEST_TEST, test_retry3_req_completed, NULL, &retry->status1);
+    grilio_channel_send_request_full(test->io, retry->req2,
+        RIL_REQUEST_TEST, test_retry3_req_completed, NULL, &retry->status2);
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(retry->req1), RIL_E_GENERIC_FAILURE);
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(retry->req2), RIL_E_GENERIC_FAILURE);
+
+    /* By the time this request completes, the first one should already
+     * be in the retry queue */
+    retry->dummy_id = test_basic_request(test, test_retry3_retry_and_cancel);
+    test_basic_response_ok(test->server, NULL, retry->dummy_id);
+}
+
+static
+gboolean
+test_retry3_init(
+    Test* test)
+{
+    TestRetry3* retry = G_CAST(test, TestRetry3, test);
+
+    retry->req1 = grilio_request_new();
+    retry->req2 = grilio_request_new();
+    grilio_request_set_timeout(retry->req1, INT_MAX);
+    grilio_request_set_timeout(retry->req2, INT_MAX);
+    grilio_request_set_retry(retry->req1, INT_MAX, 1);
+    grilio_request_set_retry(retry->req2, INT_MAX-1, 1);
+
+    GASSERT(!test->io->connected);
+    grilio_channel_add_connected_handler(test->io, test_retry3_start, test);
+    return TRUE;
+}
+
+static
+int
+test_retry3_check(
+    Test* test)
+{
+    TestRetry3* retry = G_CAST(test, TestRetry3, test);
+    if (grilio_request_retry_count(retry->req1) != 1) {
+        GDEBUG("Unexpected request 1 retry count %d",
+            grilio_request_retry_count(retry->req1));
+    } else if (grilio_request_retry_count(retry->req2) != 1) {
+        GDEBUG("Unexpected request 2 retry count %d",
+            grilio_request_retry_count(retry->req2));
+    } else if (retry->status1 != GRILIO_STATUS_CANCELLED) {
+        GDEBUG("Unexpected completion status %d for req 1", retry->status1);
+    } else if (retry->status2 != GRILIO_STATUS_CANCELLED) {
+        GDEBUG("Unexpected completion status %d for req 2", retry->status2);
+    } else {
+        return RET_OK;
+    }
+    return RET_ERR;
+}
+
+static
+void
+test_retry3_destroy(
+    Test* test)
+{
+    TestRetry3* retry = G_CAST(test, TestRetry3, test);
+    const guint id1 = grilio_request_id(retry->req1);
+    const guint id2 = grilio_request_id(retry->req2);
+    grilio_channel_cancel_request(test->io, id1, FALSE);
+    grilio_channel_cancel_request(test->io, id2, FALSE);
+    grilio_request_unref(retry->req1);
+    grilio_request_unref(retry->req2);
+}
+
+/*==========================================================================*
  * Timeout
  *==========================================================================*/
 
@@ -1355,6 +1517,12 @@ static const TestDesc all_tests[] = {
         test_retry2_init,
         test_retry2_check,
         test_retry2_destroy
+    },{
+        "Retry3",
+        sizeof(TestRetry3),
+        test_retry3_init,
+        test_retry3_check,
+        test_retry3_destroy
     },{
         "Timeout",
         sizeof(TestTimeout),
