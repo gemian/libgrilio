@@ -197,6 +197,11 @@ grilio_channel_send_request_full(
     void* user_data);
 
 gboolean
+grilio_channel_retry_request(
+    GRilIoChannel* channel,
+    guint id);
+
+gboolean
 grilio_channel_cancel_request(
     GRilIoChannel* channel,
     guint id,

@@ -198,6 +198,42 @@ grilio_channel_queue_request(
 }
 
 static
+void
+grilio_channel_requeue_request(
+    GRilIoChannel* self,
+    GRilIoRequest* req)
+{
+    GRilIoChannelPriv* priv = self->priv;
+
+    GASSERT(!g_hash_table_contains(priv->req_table,
+        GINT_TO_POINTER(req->id)));
+    GASSERT(!g_hash_table_contains(priv->req_table,
+        GINT_TO_POINTER(req->req_id)));
+
+    /* Generate new request id. The first one is kept around because
+     * it was returned to the caller. */
+    req->req_id = grilio_channel_generate_req_id(priv);
+    GASSERT(req->id != req->req_id);
+
+    req->deadline = 0;
+    req->retry_count++;
+
+    if (req->response || grilio_request_can_retry(req)) {
+        /* Stick both public and private ids into the table (for cancel) */
+        g_hash_table_insert(priv->req_table,
+            GINT_TO_POINTER(req->req_id),
+            grilio_request_ref(req));
+        g_hash_table_insert(priv->req_table,
+            GINT_TO_POINTER(req->id),
+            grilio_request_ref(req));
+    }
+
+    GVERBOSE("Queued retry #%d for request %u", req->retry_count, req->id);
+    grilio_channel_queue_request(priv, req);
+    grilio_channel_schedule_write(self);
+}
+
+static
 GRilIoRequest*
 grilio_channel_dequeue_request(
     GRilIoChannelPriv* queue)
@@ -311,7 +347,7 @@ gboolean
 grilio_channel_timeout(
     gpointer user_data)
 {
-    GRilIoChannel* self = user_data;
+    GRilIoChannel* self = GRILIO_CHANNEL(user_data);
     GRilIoChannelPriv* priv = self->priv;
     GRilIoRequest* expired = NULL;
     const gint64 now = g_get_monotonic_time();
@@ -369,33 +405,7 @@ grilio_channel_timeout(
         GRilIoRequest* req = expired;
         expired = req->next;
         req->next = NULL;
-
-        GASSERT(!g_hash_table_contains(priv->req_table,
-            GINT_TO_POINTER(req->id)));
-        GASSERT(!g_hash_table_contains(priv->req_table,
-            GINT_TO_POINTER(req->req_id)));
-
-        /* Generate new request id. The first one is kept around because
-         * it was returned to the caller. */
-        req->req_id = grilio_channel_generate_req_id(priv);
-        GASSERT(req->id != req->req_id);
-
-        req->deadline = 0;
-        req->retry_count++;
-
-        if (req->response || grilio_request_can_retry(req)) {
-            /* Stick both public and private ids into the table (for cancel) */
-            g_hash_table_insert(priv->req_table,
-                GINT_TO_POINTER(req->req_id),
-                grilio_request_ref(req));
-            g_hash_table_insert(priv->req_table,
-                GINT_TO_POINTER(req->id),
-                grilio_request_ref(req));
-        }
-
-        GVERBOSE("Queued retry #%d for request %u", req->retry_count, req->id);
-        grilio_channel_queue_request(priv, req);
-        grilio_channel_schedule_write(self);
+        grilio_channel_requeue_request(self, req);
     }
 
     grilio_channel_reset_timeout(self);
@@ -551,6 +561,55 @@ grilio_channel_write(
         GVERBOSE("%s queue empty", self->name);
         return FALSE;
     }
+}
+
+gboolean
+grilio_channel_retry_request(
+    GRilIoChannel* self,
+    guint id)
+{
+    if (G_LIKELY(self && id)) {
+        GRilIoChannelPriv* priv = self->priv;
+        GRilIoRequest* prev = NULL;
+        GRilIoRequest* req;
+
+        /* This queue is typically empty or quite small */
+        for (req = priv->first_req; req; req = req->next) {
+            if (req->id == id) {
+                /* Already queued */
+                GVERBOSE("Request %u is already queued", id);
+                return TRUE;
+            }
+        }
+
+        /* Requests sitting in the retry queue must not be in the table */
+        if (g_hash_table_lookup(priv->req_table, GINT_TO_POINTER(id))) {
+            /* Just been sent, no reply yet */
+            GVERBOSE("Request %u is in progress", id);
+            return FALSE;
+        }
+
+        /* Check the retry queue then */
+        for (req = priv->retry_req; req; req = req->next) {
+            if (req->id == id) {
+                GDEBUG("Retrying request %u", id);
+                if (prev) {
+                    prev->next = req->next;
+                } else {
+                    priv->retry_req = req->next;
+                }
+                req->next = NULL;
+                grilio_channel_requeue_request(self, req);
+                grilio_channel_reset_timeout(self);
+                return TRUE;
+            }
+            prev = req;
+        }
+
+        /* Probably an invalid request id */
+        GWARN("Can't retry request %u", id);
+    }
+    return FALSE;
 }
 
 static
@@ -757,7 +816,7 @@ grilio_channel_read_callback(
     GIOCondition condition,
     gpointer data)
 {
-    GRilIoChannel* self = data;
+    GRilIoChannel* self = GRILIO_CHANNEL(data);
     gboolean ok;
     grilio_channel_ref(self);
     ok = (condition & G_IO_IN) && grilio_channel_read(self);
@@ -773,7 +832,7 @@ grilio_channel_write_callback(
     GIOCondition condition,
     gpointer data)
 {
-    GRilIoChannel* self = data;
+    GRilIoChannel* self = GRILIO_CHANNEL(data);
     gboolean ok;
     grilio_channel_ref(self);
     ok = (condition & G_IO_OUT) && grilio_channel_write(self);
