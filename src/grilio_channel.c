@@ -34,6 +34,8 @@
 #include "grilio_parser.h"
 #include "grilio_log.h"
 
+#include <gutil_misc.h>
+
 #include <gio/gio.h>
 #include <errno.h>
 #include <sys/socket.h>
@@ -1047,18 +1049,10 @@ grilio_channel_remove_handler(
 void
 grilio_channel_remove_handlers(
     GRilIoChannel* self,
-    gulong *ids,
+    gulong* ids,
     guint count)
 {
-    if (G_LIKELY(self) && G_LIKELY(ids) && G_LIKELY(count)) {
-        guint i;
-        for (i=0; i<count; i++) {
-            if (ids[i]) {
-                g_signal_handler_disconnect(self, ids[i]);
-                ids[i] = 0;
-            }
-        }
-    }
+    gutil_disconnect_handlers(self, ids, count);
 }
 
 guint

@@ -6,8 +6,9 @@ Group: Development/Libraries
 License: BSD
 URL: https://github.com/nemomobile/libgrilio
 Source: %{name}-%{version}.tar.bz2
-BuildRequires: glib2-devel >= 2.0
-BuildRequires: libglibutil-devel
+Requires: libglibutil >= 1.0.5
+BuildRequires: pkgconfig(glib-2.0)
+BuildRequires: pkgconfig(libglibutil) >= 1.0.5
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig
 
