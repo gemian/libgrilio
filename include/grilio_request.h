@@ -105,6 +105,18 @@ grilio_request_append_int32(
     guint32 value);
 
 void
+grilio_request_append_int32_array(
+    GRilIoRequest* request,
+    const gint32* values,
+    guint count);
+
+void
+grilio_request_append_uint32_array(
+    GRilIoRequest* request,
+    const guint32* values,
+    guint count);
+
+void
 grilio_request_append_utf8(
     GRilIoRequest* request,
     const char* utf8);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -62,9 +62,21 @@ grilio_parser_get_int32(
     gint32* value);
 
 gboolean
+grilio_parser_get_int32_array(
+    GRilIoParser* parser,
+    gint32* values,
+    guint count);
+
+gboolean
 grilio_parser_get_uint32(
     GRilIoParser* parser,
     guint32* value);
+
+gboolean
+grilio_parser_get_uint32_array(
+    GRilIoParser* parser,
+    guint32* values,
+    guint count);
 
 char*
 grilio_parser_get_utf8(

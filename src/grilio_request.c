@@ -178,6 +178,29 @@ grilio_request_append_int32(
 }
 
 void
+grilio_request_append_int32_array(
+    GRilIoRequest* req,
+    const gint32* values,
+    guint n)
+{
+    return grilio_request_append_uint32_array(req, (const guint32*)values, n);
+}
+
+void
+grilio_request_append_uint32_array(
+    GRilIoRequest* req,
+    const guint32* values,
+    guint count)
+{
+    if (G_LIKELY(req)) {
+        guint i;
+        for (i=0; i<count; i++) {
+            grilio_request_append_int32(req, values[i]);
+        }
+    }
+}
+
+void
 grilio_request_append_utf8(
     GRilIoRequest* req,
     const char* utf8)

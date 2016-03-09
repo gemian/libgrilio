@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -88,6 +88,15 @@ grilio_parser_get_int32(
 }
 
 gboolean
+grilio_parser_get_int32_array(
+    GRilIoParser* parser,
+    gint32* values,
+    guint count)
+{
+    return grilio_parser_get_uint32_array(parser, (guint32*)values, count);
+}
+
+gboolean
 grilio_parser_get_uint32(
     GRilIoParser* parser,
     guint32* value)
@@ -103,6 +112,25 @@ grilio_parser_get_uint32(
     } else {
         return FALSE;
     }
+}
+
+gboolean
+grilio_parser_get_uint32_array(
+    GRilIoParser* parser,
+    guint32* values,
+    guint count)
+{
+    guint i;
+    for (i=0; i<count; i++) {
+        if (values) {
+            if (!grilio_parser_get_uint32(parser, values + i)) {
+                return FALSE;
+            }
+        } else if (!grilio_parser_get_uint32(parser, NULL)) {
+            return FALSE;
+        }
+    }
+    return TRUE;
 }
 
 char*

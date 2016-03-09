@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -65,6 +65,7 @@ test_basic_types()
     const static gint32 test_i32 = -1234;
     const static guint32 test_u32 = 0x01020304;
     const static guchar test_bytes[4] = { 0x05, 0x06, 0x07, 0x08 };
+    const static gint32 test_ints[3] = { 9, 10, 11 };
     GRilIoRequest* req = grilio_request_sized_new(12);
     GRilIoRequest* req2 = grilio_request_new();
     const void* data;
@@ -76,17 +77,20 @@ test_basic_types()
     grilio_request_append_byte(req, test_bytes[1]);
     grilio_request_append_byte(req, test_bytes[2]);
     grilio_request_append_byte(req, test_bytes[3]);
+    grilio_request_append_int32_array(req, test_ints, 3);
     data = grilio_request_data(req);
     len = grilio_request_size(req);
 
     if (grilio_request_status(req) == GRILIO_REQUEST_NEW &&
         grilio_request_id(req) == 0 &&
-        len == 12) {
+        len == 24) {
         GRilIoParser parser;
         gint32 i32 = 0;
         guint32 u32 = 0;
         guchar bytes[4];
+        gint32 ints[3];
         memset(bytes, 0, sizeof(bytes));
+        memset(ints, 0, sizeof(ints));
         /* Parse what we have just encoded */
         grilio_parser_init(&parser, data, len);
         if (grilio_parser_get_int32(&parser, &i32) &&
@@ -95,12 +99,14 @@ test_basic_types()
             grilio_parser_get_byte(&parser, bytes + 1) &&
             grilio_parser_get_byte(&parser, bytes + 2) &&
             grilio_parser_get_byte(&parser, bytes + 3) &&
+            grilio_parser_get_int32_array(&parser, ints, 3) &&
             i32 == test_i32 &&
             u32 == test_u32 &&
             bytes[0] == test_bytes[0] &&
             bytes[1] == test_bytes[1] &&
             bytes[2] == test_bytes[2] &&
             bytes[3] == test_bytes[3] &&
+            !memcmp(ints, test_ints, sizeof(ints)) &&
             grilio_parser_at_end(&parser)) {
             /* Parse is again, without checking the values */
             grilio_parser_init(&parser, data, len);
@@ -110,10 +116,13 @@ test_basic_types()
                 grilio_parser_get_byte(&parser, NULL) &&
                 grilio_parser_get_byte(&parser, NULL) &&
                 grilio_parser_get_byte(&parser, NULL) &&
+                grilio_parser_get_int32_array(&parser, NULL, 3) &&
                 grilio_parser_at_end(&parser) &&
                 !grilio_parser_get_uint32(&parser, NULL) &&
                 !grilio_parser_get_byte(&parser, NULL) &&
                 !grilio_parser_get_utf8(&parser) &&
+                !grilio_parser_get_int32_array(&parser, ints, 1) &&
+                !grilio_parser_get_int32_array(&parser, NULL, 1) &&
                 !grilio_parser_skip_string(&parser)) {
                 ret = RET_OK;
             }
@@ -134,6 +143,8 @@ test_basic_types()
     grilio_request_append_bytes(NULL, &ret, 0);
     grilio_request_append_bytes(NULL, NULL, 1);
     grilio_request_append_utf8(NULL, NULL);
+    grilio_request_append_int32_array(NULL, NULL, 0);
+    grilio_request_append_uint32_array(NULL, NULL, 0);
     if (grilio_request_ref(NULL) ||
         grilio_request_status(NULL) != GRILIO_REQUEST_INVALID ||
         grilio_request_id(NULL) != 0 ||
