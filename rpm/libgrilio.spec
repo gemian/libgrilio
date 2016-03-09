@@ -1,10 +1,10 @@
 Name: libgrilio
-Version: 1.0.7
+Version: 1.0.8
 Release: 0
 Summary: RIL I/O library
 Group: Development/Libraries
 License: BSD
-URL: https://github.com/nemomobile/libgrilio
+URL: https://git.merproject.org/mer-core/libgrilio
 Source: %{name}-%{version}.tar.bz2
 Requires: libglibutil >= 1.0.5
 BuildRequires: pkgconfig(glib-2.0)
