@@ -1063,7 +1063,7 @@ grilio_channel_add_logger(
 {
     if (G_LIKELY(self && log)) {
         GRilIoChannelPriv* priv = self->priv;
-        GrilIoChannelLogger* logger = g_new(GrilIoChannelLogger, 1);
+        GrilIoChannelLogger* logger = g_slice_new(GrilIoChannelLogger);
         priv->last_logger_id++;
         if (!priv->last_logger_id) priv->last_logger_id++;
         logger->id = priv->last_logger_id;
@@ -1088,7 +1088,7 @@ grilio_channel_remove_logger(
             GSList* next = link->next;
             GrilIoChannelLogger* logger = link->data;
             if (logger->id == id) {
-                g_free(logger);
+                g_slice_free(GrilIoChannelLogger, logger);
                 priv->log_list = g_slist_delete_link(priv->log_list, link);
                 return;
             }

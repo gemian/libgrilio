@@ -45,7 +45,7 @@ GRilIoRequest*
 grilio_request_sized_new(
     gsize size)
 {
-    GRilIoRequest* req = g_new0(GRilIoRequest, 1);
+    GRilIoRequest* req = g_slice_new0(GRilIoRequest);
     req->refcount = 1;
     req->timeout = GRILIO_TIMEOUT_DEFAULT;
     req->bytes = g_byte_array_sized_new(GRILIO_REQUEST_HEADER_SIZE + size);
@@ -65,7 +65,7 @@ grilio_request_free(
         req->destroy(req->user_data);
     }
     g_byte_array_unref(req->bytes);
-    g_free(req);
+    g_slice_free(GRilIoRequest, req);
 }
 
 GRilIoRequest*

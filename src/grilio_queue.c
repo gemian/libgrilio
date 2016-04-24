@@ -47,7 +47,7 @@ grilio_queue_new(
     GRilIoChannel* channel)
 {
     if (G_LIKELY(channel)) {
-        GRilIoQueue* queue = g_new0(GRilIoQueue, 1);
+        GRilIoQueue* queue = g_slice_new0(GRilIoQueue);
         queue->refcount = 1;
         queue->channel = grilio_channel_ref(channel);
         return queue;
@@ -69,7 +69,7 @@ grilio_queue_free(
         req = next;
     }
     grilio_channel_unref(queue->channel);
-    g_free(queue);
+    g_slice_free(GRilIoQueue, queue);
 }
 
 GRilIoQueue*
