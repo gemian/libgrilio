@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2016 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -37,8 +37,15 @@
 #define GLOG_MODULE_NAME GRILIO_HEXDUMP_LOG_MODULE
 #include <gutil_log.h>
 
-/* Log sub-module to turn prefix off */
-GLOG_MODULE_DEFINE2(NULL, GRILIO_LOG_MODULE);
+/* Sub-module to turn prefix off */
+GLogModule GLOG_MODULE_NAME = {
+    NULL,                   /* name */
+    &GRILIO_LOG_MODULE,     /* parent */
+    NULL,                   /* reserved */
+    GLOG_LEVEL_MAX,         /* max_level */
+    GLOG_LEVEL_INHERIT,     /* level */
+    GLOG_FLAG_HIDE_NAME     /* flags */
+};
 
 guint
 grilio_log_hexdump_line(
