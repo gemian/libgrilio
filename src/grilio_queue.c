@@ -36,7 +36,7 @@
 #include <gutil_macros.h>
 
 struct grilio_queue {
-    int refcount;
+    gint refcount;
     GRilIoChannel* channel;
     GRilIoRequest* first_req;
     GRilIoRequest* last_req;
@@ -48,7 +48,7 @@ grilio_queue_new(
 {
     if (G_LIKELY(channel)) {
         GRilIoQueue* queue = g_slice_new0(GRilIoQueue);
-        queue->refcount = 1;
+        g_atomic_int_set(&queue->refcount, 1);
         queue->channel = grilio_channel_ref(channel);
         return queue;
     }
@@ -78,7 +78,7 @@ grilio_queue_ref(
 {
     if (G_LIKELY(queue)) {
         GASSERT(queue->refcount > 0);
-        queue->refcount++;
+        g_atomic_int_inc(&queue->refcount);
     }
     return queue;
 }
@@ -88,7 +88,8 @@ grilio_queue_unref(
     GRilIoQueue* queue)
 {
     if (G_LIKELY(queue)) {
-        if (!(--queue->refcount)) {
+        GASSERT(queue->refcount > 0);
+        if (g_atomic_int_dec_and_test(&queue->refcount)) {
             grilio_queue_free(queue);
         }
     }

@@ -46,7 +46,7 @@ grilio_request_sized_new(
     gsize size)
 {
     GRilIoRequest* req = g_slice_new0(GRilIoRequest);
-    req->refcount = 1;
+    g_atomic_int_set(&req->refcount, 1);
     req->timeout = GRILIO_TIMEOUT_DEFAULT;
     req->bytes = g_byte_array_sized_new(GRILIO_REQUEST_HEADER_SIZE + size);
     g_byte_array_set_size(req->bytes, GRILIO_REQUEST_HEADER_SIZE);
@@ -74,7 +74,7 @@ grilio_request_ref(
 {
     if (G_LIKELY(req)) {
         GASSERT(req->refcount > 0);
-        req->refcount++;
+        g_atomic_int_inc(&req->refcount);
     }
     return req;
 }
@@ -84,7 +84,8 @@ grilio_request_unref(
     GRilIoRequest* req)
 {
     if (G_LIKELY(req)) {
-        if (!(--req->refcount)) {
+        GASSERT(req->refcount > 0);
+        if (g_atomic_int_dec_and_test(&req->refcount)) {
             grilio_request_free(req);
         }
     }

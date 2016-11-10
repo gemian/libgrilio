@@ -55,7 +55,7 @@
  * [2] Request id 
  */
 struct grilio_request {
-    int refcount;
+    gint refcount;
     int timeout;
     guint32 code;
     guint id;
