@@ -714,6 +714,7 @@ grilio_channel_handle_packet(
                     grilio_channel_reset_timeout(self);
                 } else {
                     grilio_channel_drop_request(priv, req);
+                    req->status = GRILIO_REQUEST_DONE;
                     if (req->response) {
                         req->response(self, status, priv->read_buf + 12,
                             priv->read_len - 12, req->user_data);
