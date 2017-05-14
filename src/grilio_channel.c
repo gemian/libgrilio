@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -13,8 +13,8 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of the Jolla Ltd nor the names of its contributors
- *      may be used to endorse or promote products derived from this software
+ *   3. Neither the name of Jolla Ltd nor the names of its contributors may
+ *      be used to endorse or promote products derived from this software
  *      without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -492,6 +492,11 @@ grilio_channel_write(
             priv->sub[0], priv->sub[1], priv->sub[2], priv->sub[3]);
     }
 
+    if (!self->connected) {
+        GVERBOSE("%s not connected yet", self->name);
+        return FALSE;
+    }
+
     req = priv->send_req;
     if (!req) {
         req = priv->send_req = grilio_channel_dequeue_request(priv);
@@ -696,7 +701,9 @@ grilio_channel_handle_packet(
             grilio_channel_log(self, GRILIO_PACKET_RESP, id, status,
                 priv->read_buf, priv->read_len);
 
-            if (req) {
+            /* Handle the case if we receive a response with the id of the
+             * packet which we haven't sent yet. */
+            if (req && req->status == GRILIO_REQUEST_SENT) {
                 GASSERT(req->req_id == id);
                 /* Temporary increment the ref count to compensate for
                  * g_hash_table_remove possibly unreferencing the request */
