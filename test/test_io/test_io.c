@@ -13,8 +13,8 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of the Jolla Ltd nor the names of its contributors
- *      may be used to endorse or promote products derived from this software
+ *   3. Neither the name of Jolla Ltd nor the names of its contributors may
+ *      be used to endorse or promote products derived from this software
  *      without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -30,6 +30,8 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "test_common.h"
+
 #include "grilio_channel.h"
 #include "grilio_request.h"
 #include "grilio_parser.h"
@@ -41,40 +43,87 @@
 #include <gutil_log.h>
 #include <gutil_macros.h>
 
-#define RET_OK       (0)
-#define RET_ERR      (1)
-#define RET_TIMEOUT  (2)
-
 #define TEST_TIMEOUT (10) /* seconds */
 
 #define RIL_REQUEST_TEST 51
 #define RIL_UNSOL_RIL_CONNECTED 1034
 #define RIL_E_GENERIC_FAILURE 2
 
-typedef struct test_desc TestDesc;
-typedef struct test {
-    const TestDesc* desc;
+static TestOpt test_opt;
+
+typedef struct test_common_data {
+    const char* name;
     GMainLoop* loop;
     GRilIoTestServer* server;
     GRilIoChannel* io;
     guint timeout_id;
     guint log;
-    int ret;
 } Test;
 
-struct test_desc {
-    const char* name;
-    gsize size;
-    gboolean (*init)(Test* test);
-    int (*check)(Test* test);
-    void (*destroy)(Test* test);
-};
+#define test_new(type,name) ((type *)test_alloc(name, sizeof(type)))
+
+static
+gboolean
+test_timeout_expired(
+    gpointer data)
+{
+    Test* test = data;
+    test->timeout_id = 0;
+    g_main_loop_quit(test->loop);
+    GERR("%s TIMEOUT", test->name);
+    return G_SOURCE_REMOVE;
+}
+
+static
+void*
+test_alloc(
+    const char* name,
+    gsize size)
+{
+    Test* test = g_malloc0(size);
+    GRilIoTestServer* server = grilio_test_server_new();
+    int fd = grilio_test_server_fd(server);
+    memset(test, 0, sizeof(*test));
+    test->name = name;
+    test->loop = g_main_loop_new(NULL, FALSE);
+    test->server = server;
+    test->io = grilio_channel_new_fd(fd, "SUB1", FALSE);
+    grilio_channel_set_name(test->io, "TEST");
+    grilio_channel_set_name(NULL, NULL); /* This one does nothing */
+    test->log = grilio_channel_add_default_logger(test->io, GLOG_LEVEL_VERBOSE);
+    if (!(test_opt.flags & TEST_FLAG_DEBUG)) {
+        test->timeout_id = g_timeout_add_seconds(TEST_TIMEOUT,
+            test_timeout_expired, test);
+    }
+    return test;
+}
+
+static
+void
+test_free(
+    Test* test)
+{
+    g_assert((test_opt.flags & TEST_FLAG_DEBUG) || test->timeout_id);
+    if (test->timeout_id) g_source_remove(test->timeout_id);
+    /* These function should handle NULL arguments */
+    grilio_channel_remove_logger(NULL, 0);
+    grilio_channel_shutdown(NULL, FALSE);
+    grilio_channel_unref(NULL);
+    /* Remove logger twice, the second call should do nothing */
+    grilio_channel_remove_logger(test->io, test->log);
+    grilio_channel_remove_logger(test->io, test->log);
+    grilio_channel_shutdown(test->io, FALSE);
+    grilio_channel_unref(test->io);
+    g_main_loop_unref(test->loop);
+    grilio_test_server_free(test->server);
+    g_free(test);
+}
 
 /*==========================================================================*
  * Connected
  *==========================================================================*/
 
-typedef struct test_connected {
+typedef struct test_connected_data {
     Test test;
     gulong event_id;
     gulong connected_id;
@@ -90,24 +139,24 @@ test_connected_event(
     guint len,
     void* user_data)
 {
-    TestConnected* test = G_CAST(user_data, TestConnected, test);
-    GASSERT(code == RIL_UNSOL_RIL_CONNECTED);
-    if (code == RIL_UNSOL_RIL_CONNECTED) {
-        GRilIoParser parser;
-        int count = 0;
-        guint32 version = 0;
-        grilio_parser_init(&parser, data, len);
-        if (grilio_parser_get_int32(&parser, &count) &&
-            grilio_parser_get_uint32(&parser, &version) &&
-            grilio_parser_at_end(&parser)) {
-            GDEBUG("RIL version %u", version);
-            if (count == 1 && version == GRILIO_RIL_VERSION) {
-                grilio_channel_remove_handler(test->test.io, test->event_id);
-                test->event_id = 0;
-                test->event_count++;
-            }
-        }
-    }
+    TestConnected* test = user_data;
+    GRilIoParser parser;
+    int count = 0;
+    guint32 version = 0;
+
+    g_assert(code == RIL_UNSOL_RIL_CONNECTED);
+    grilio_parser_init(&parser, data, len);
+    g_assert(grilio_parser_get_int32(&parser, &count));
+    g_assert(grilio_parser_get_uint32(&parser, &version));
+    g_assert(grilio_parser_at_end(&parser));
+
+    GDEBUG("RIL version %u", version);
+    g_assert(count == 1);
+    g_assert(version == GRILIO_RIL_VERSION);
+    grilio_channel_remove_handler(test->test.io, test->event_id);
+    test->event_id = 0;
+    test->event_count++;
+
     if (test->event_count == 2) {
         g_main_loop_quit(test->test.loop);
     }
@@ -119,7 +168,7 @@ test_connected_callback(
     GRilIoChannel* io,
     void* user_data)
 {
-    TestConnected* test = G_CAST(user_data, TestConnected, test);
+    TestConnected* test = user_data;
     grilio_channel_remove_handler(test->test.io, test->connected_id);
     test->connected_id = 0;
     test->event_count++;
@@ -129,43 +178,33 @@ test_connected_callback(
 }
 
 static
-gboolean
-test_connected_init(
-    Test* test)
-{
-    TestConnected* tc = G_CAST(test, TestConnected, test);
-    tc->event_id = grilio_channel_add_unsol_event_handler(test->io,
-            test_connected_event, RIL_UNSOL_RIL_CONNECTED, test);
-    tc->connected_id = grilio_channel_add_connected_handler(test->io,
-            test_connected_callback, test);
-    return tc->event_id != 0 && tc->connected_id;
-}
-
-static
-int
-test_connected_check(
-    Test* test)
-{
-    TestConnected* tc = G_CAST(test, TestConnected, test);
-    if (tc->event_count == 2 && !tc->connected_id && !tc->event_id) {
-        return RET_OK;
-    } else {
-        return RET_ERR;
-    }
-}
-
-static
 void
-test_connected_destroy(
-    Test* test)
+test_connected(
+    void)
 {
-    TestConnected* connected = G_CAST(test, TestConnected, test);
-    grilio_channel_remove_handler(test->io, connected->event_id);
+    TestConnected* data = test_new(TestConnected, "Connected");
+    Test* test = &data->test;
+
+    data->event_id = grilio_channel_add_unsol_event_handler(test->io,
+            test_connected_event, RIL_UNSOL_RIL_CONNECTED, data);
+    g_assert(data->event_id);
+    data->connected_id = grilio_channel_add_connected_handler(test->io,
+            test_connected_callback, data);
+    g_assert(data->connected_id);
+
+    g_main_loop_run(test->loop);
+    g_assert(data->event_count == 2);
+    g_assert(!data->connected_id);
+    g_assert(!data->event_id);
+
+    test_free(test);
 }
 
 /*==========================================================================*
  * Basic
  *==========================================================================*/
+
+#define BASIC_RESPONSE_TEST "TEST"
 
 static
 void
@@ -177,23 +216,26 @@ test_basic_response(
     void* user_data)
 {
     Test* test = user_data;
-    if (status == 0) {
-        GRilIoParser parser;
-        char* info;
-        grilio_parser_init(&parser, data, len);
-        info = grilio_parser_get_utf8(&parser);
-        if (info) {
-            GDEBUG("Baseband version: %s", info);
-            g_free(info);
-            if (grilio_parser_at_end(&parser)) {
-                grilio_parser_init(&parser, data, len);
-                if (grilio_parser_skip_string(&parser) &&
-                    grilio_parser_at_end(&parser)) {
-                    test->ret = RET_OK;
-                }
-            }
-        }
-    }
+    GRilIoParser parser;
+    char* text;
+
+    g_assert(status == GRILIO_STATUS_OK);
+
+    /* Unpack the string */
+    grilio_parser_init(&parser, data, len);
+    text = grilio_parser_get_utf8(&parser);
+    g_assert(grilio_parser_at_end(&parser));
+    g_assert(text);
+    GDEBUG("%s", text);
+    g_assert(!g_strcmp0(text, BASIC_RESPONSE_TEST));
+    g_free(text);
+
+    /* Skip the string */
+    grilio_parser_init(&parser, data, len);
+    g_assert(grilio_parser_skip_string(&parser));
+    g_assert(grilio_parser_at_end(&parser));
+
+    /* Done */
     g_main_loop_quit(test->loop);
 }
 
@@ -225,31 +267,64 @@ test_basic_response_ok(
 }
 
 static
-gboolean
-test_basic_init(
-    Test* test)
+void
+test_basic(
+    void)
 {
+    Test* test = test_new(Test, "Basic");
+    GRilIoRequest* req = grilio_request_new();
+    guint id;
+
+    /* Test NULL resistance */
+    g_assert(!grilio_request_retry_count(NULL));
+    grilio_request_set_retry(NULL, 0, 0);
+    grilio_channel_set_timeout(NULL, 0);
+    grilio_channel_cancel_all(NULL, FALSE);
+    g_assert(!grilio_channel_ref(NULL));
+    g_assert(!grilio_channel_add_connected_handler(NULL, NULL, NULL));
+    g_assert(!grilio_channel_add_connected_handler(test->io, NULL, NULL));
+    g_assert(!grilio_channel_add_disconnected_handler(NULL, NULL, NULL));
+    g_assert(!grilio_channel_add_disconnected_handler(test->io, NULL, NULL));
+    g_assert(!grilio_channel_add_unsol_event_handler(NULL, NULL, 0, NULL));
+    g_assert(!grilio_channel_add_unsol_event_handler(test->io, NULL, 0, NULL));
+    g_assert(!grilio_channel_send_request(NULL, NULL, 0));
+    g_assert(!grilio_channel_get_request(NULL, 0));
+    g_assert(!grilio_channel_get_request(test->io, 0));
+    g_assert(!grilio_channel_get_request(test->io, INT_MAX));
+
     /* Test send/cancel before we are connected to the server. */
-    guint id = grilio_channel_send_request(test->io, NULL, 0);
-    if (grilio_channel_cancel_request(test->io, id, FALSE)) {
-        grilio_test_server_set_chunk(test->server, 5);
-        return test_basic_response_ok(test->server, "UNIT_TEST",
-            test_basic_request(test, test_basic_response));
-    }
-    return FALSE;
+    id = grilio_channel_send_request(test->io, NULL, 0);
+    g_assert(grilio_channel_cancel_request(test->io, id, FALSE));
+    grilio_test_server_set_chunk(test->server, 5);
+
+    /* Submit repeatable request without the completion callback */
+    grilio_request_set_retry(req, 0, 1);
+    g_assert(test_basic_response_ok(test->server, "IGNORE",
+        grilio_channel_send_request(test->io, req, RIL_REQUEST_TEST)));
+
+    /* This one has a callback which will terminate the test */
+    g_assert(test_basic_response_ok(test->server, BASIC_RESPONSE_TEST,
+        test_basic_request(test, test_basic_response)));
+
+    g_main_loop_run(test->loop);
+    g_assert(grilio_request_status(req) == GRILIO_REQUEST_DONE);
+    grilio_request_unref(req);
+    test_free(test);
 }
 
 /*==========================================================================*
  * Queue
  *==========================================================================*/
 
-typedef struct test_queue {
+typedef struct test_queue_data {
     Test test;
     int cancel_count;
     int success_count;
     int destroy_count;
     GRilIoQueue* queue[3];
+    gulong connected_id;
     guint cancel_id;
+    guint last_id;
 } TestQueue;
 
 static
@@ -294,14 +369,13 @@ test_queue_last_response(
 {
     TestQueue* queue = user_data;
     GDEBUG("Last response status %d", status);
-    if (status == GRILIO_STATUS_OK) {
-        /* 4 events should be cancelled, first one succeed,
-         * this one doesn't count */
-        if (queue->cancel_count == 4 &&
-            queue->success_count == 1 &&
-            queue->destroy_count == 1) {
-            queue->test.ret = RET_OK;
-        }
+    g_assert(status == GRILIO_STATUS_OK);
+
+    /* 4 events should be cancelled, first one succeed,
+     * this one doesn't count */
+    if (queue->cancel_count == 4 &&
+        queue->success_count == 1 &&
+        queue->destroy_count == 1) {
         g_main_loop_quit(queue->test.loop);
     }
 }
@@ -321,9 +395,13 @@ test_queue_first_response(
         queue->success_count++;
         grilio_queue_cancel_all(queue->queue[1], TRUE);
         grilio_queue_cancel_request(queue->queue[0], queue->cancel_id, TRUE);
-        /* This one will stop the event loop */
-        test_basic_response_ok(queue->test.server, "TEST",
-            test_basic_request(&queue->test, test_queue_last_response));
+
+        g_assert(!queue->last_id);
+        queue->last_id = test_basic_request(&queue->test,
+            test_queue_last_response);
+
+        /* This one stops the event loop */
+        test_basic_response_ok(queue->test.server, "TEST", queue->last_id);
 
         /* This will deallocate the queue, cancelling all the requests in
          * the process. Callbacks won't be notified. Extra ref just improves
@@ -336,67 +414,92 @@ test_queue_first_response(
 }
 
 static
-gboolean
-test_queue_init(
-    Test* test)
+void
+test_queue_start(
+    GRilIoChannel* channel,
+    void* user_data)
 {
-    TestQueue* queue = G_CAST(test, TestQueue, test);
-    queue->queue[0] = grilio_queue_new(test->io);
-    queue->queue[1] = grilio_queue_new(test->io);
-    queue->queue[2] = grilio_queue_new(test->io);
+    TestQueue* queue = user_data;
+
+    /* NULL resistance */
+    g_assert(!grilio_queue_send_request_full(NULL, NULL, 0, NULL, NULL, NULL));
 
     /* This entire queue will be cancelled */
     grilio_queue_send_request_full(queue->queue[1], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
     grilio_queue_send_request_full(queue->queue[1], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
 
-    /* This one will invoke test_queue_destroy when cancedl which will
+    /* This one will invoke test_queue_destroy when canceled which will
      * increment destroy_count */
     grilio_queue_send_request_full(queue->queue[1], NULL,
         RIL_REQUEST_TEST, test_queue_response,
-        test_queue_destroy_request, test);
+        test_queue_destroy_request, queue);
 
     /* Cancel request without callback */
     grilio_queue_cancel_request(queue->queue[1],
         grilio_queue_send_request(queue->queue[1], NULL,
             RIL_REQUEST_TEST), FALSE);
 
-    /* This one will be cancelled impplicitely, when queue will get
+    /* This one will be cancelled implicitely, when queue will get
      * deallocated. Callbacks won't be notified. */
     grilio_queue_send_request_full(queue->queue[2], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
     grilio_queue_send_request_full(queue->queue[2], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
     grilio_queue_send_request_full(queue->queue[2], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, test);
+        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
     grilio_queue_send_request(queue->queue[2], NULL,
         RIL_REQUEST_TEST);
 
     /* This one will succeed */
-    test_basic_response_ok(test->server, "QUEUE_TEST",
+    test_basic_response_ok(queue->test.server, "QUEUE_TEST",
         grilio_queue_send_request_full(queue->queue[0], NULL,
             RIL_REQUEST_TEST, test_queue_first_response,
-            NULL, test));
+            NULL, queue));
 
     /* This one from queue 0 will be cancelled too */
     queue->cancel_id = grilio_queue_send_request_full(queue->queue[0], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, test);
-    test_basic_response_ok(test->server, "CANCEL", queue->cancel_id);
-    return TRUE;
+        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
+    test_basic_response_ok(queue->test.server, "CANCEL", queue->cancel_id);
 }
 
 static
 void
-test_queue_destroy(
-    Test* test)
+test_queue(
+    void)
 {
-    TestQueue* queue = G_CAST(test, TestQueue, test);
+    TestQueue* queue = test_new(TestQueue, "Queue");
+    Test* test = &queue->test;
+
+    queue->queue[0] = grilio_queue_new(test->io);
+    queue->queue[1] = grilio_queue_new(test->io);
+    queue->queue[2] = grilio_queue_new(test->io);
+
+    /* There are no requests with zero id */
+    g_assert(!grilio_queue_cancel_request(queue->queue[0], 0, FALSE));
+
+    /* Test NULL resistance */
+    g_assert(!grilio_queue_ref(NULL));
+    g_assert(!grilio_queue_new(NULL));
+    grilio_queue_cancel_request(NULL, 0, FALSE);
+    grilio_queue_cancel_all(NULL, FALSE);
+
+    /* First wait until we get connected to the test server */
+    queue->connected_id = grilio_channel_add_connected_handler(test->io,
+        test_queue_start, queue);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    g_assert(queue->last_id);
     grilio_queue_cancel_all(queue->queue[0], FALSE);
     grilio_queue_cancel_all(queue->queue[1], FALSE);
     grilio_queue_unref(queue->queue[0]);
     grilio_queue_unref(queue->queue[1]);
-    grilio_queue_unref(queue->queue[2]); /* Should already be NULL */
+    g_assert(!queue->queue[2]); /* This one should already be NULL */
+    grilio_queue_unref(queue->queue[2]);
+    test_free(test);
 }
 
 /*==========================================================================*
@@ -405,14 +508,13 @@ test_queue_destroy(
 
 static
 void
-test_write_error(
+test_write_error_handler(
     GRilIoChannel* io,
     const GError* error,
     void* user_data)
 {
     Test* test = user_data;
     GDEBUG("%s", GERRMSG(error));
-    test->ret = RET_OK;
     g_main_loop_quit(test->loop);
 }
 
@@ -430,20 +532,20 @@ test_write_completion(
 
 static
 void
-test_write_error1(
+test_write_error1_connected(
     GRilIoChannel* io,
     void* user_data)
 {
     Test* test = user_data;
     grilio_test_server_shutdown(test->server);
     /* This should result in test_write_error getting invoked */
-    grilio_channel_add_error_handler(test->io, test_write_error, test);
+    grilio_channel_add_error_handler(test->io, test_write_error_handler, test);
     grilio_channel_send_request(io, NULL, RIL_REQUEST_TEST);
 }
 
 static
 void
-test_write_error2(
+test_write_error2_connected(
     GRilIoChannel* io,
     void* user_data)
 {
@@ -451,92 +553,98 @@ test_write_error2(
     Test* test = user_data;
     grilio_test_server_shutdown(test->server);
     /* This should result in test_write_error getting invoked */
-    grilio_channel_add_error_handler(test->io, test_write_error, test);
+    grilio_channel_add_error_handler(test->io, test_write_error_handler, test);
     id = grilio_channel_send_request(io, NULL, RIL_REQUEST_TEST);
     /* The first cancel should succeed, the second one fail */
-    if (!grilio_channel_cancel_request(io, id, TRUE) ||
-        grilio_channel_cancel_request(io, id, TRUE) ||
-        /* There's no requests with zero id */
-        grilio_channel_cancel_request(io, 0, TRUE)){
-        test->ret = RET_ERR;
-    }
+    g_assert(grilio_channel_cancel_request(io, id, TRUE));
+    g_assert(!grilio_channel_cancel_request(io, id, TRUE));
+    /* There's no requests with zero id */
+    g_assert(!grilio_channel_cancel_request(io, 0, TRUE));
+}
+
+static
+void
+test_write_error3_connected(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    guint id;
+    Test* test = user_data;
+    grilio_test_server_shutdown(test->server);
+    /* This should result in test_write_error getting invoked */
+    grilio_channel_add_error_handler(test->io, test_write_error_handler, test);
+    id = grilio_channel_send_request_full(io, NULL,
+        RIL_REQUEST_TEST, test_write_completion, NULL, test);
+    /* The first cancel should succeed, the second one fail */
+    g_assert(grilio_channel_cancel_request(io, id, TRUE));
+    g_assert(!grilio_channel_cancel_request(io, id, TRUE));
+    /* INT_MAX is a non-existent id */
+    g_assert(!grilio_channel_cancel_request(io, INT_MAX, TRUE));
+}
+
+static
+void
+test_write_error(
+    const char* name,
+    GRilIoChannelEventFunc connected)
+{
+    Test* test = test_new(Test, name);
+    grilio_channel_add_connected_handler(test->io, connected, test);
+    g_main_loop_run(test->loop);
+    test_free(test);
+}
+
+static
+void
+test_write_error1(
+    void)
+{
+    /* grilio_channel_new_socket("/tmp" must fail */
+    g_assert(!grilio_channel_new_socket("/tmp", NULL));
+    test_write_error("WriteError1", test_write_error1_connected);
+}
+
+static
+void
+test_write_error2(
+    void)
+{
+    test_write_error("WriteError2", test_write_error2_connected);
 }
 
 static
 void
 test_write_error3(
-    GRilIoChannel* io,
-    void* user_data)
+    void)
 {
-    guint id;
-    Test* test = user_data;
-    grilio_test_server_shutdown(test->server);
-    /* This should result in test_write_error getting invoked */
-    grilio_channel_add_error_handler(test->io, test_write_error, test);
-    id = grilio_channel_send_request_full(io, NULL,
-        RIL_REQUEST_TEST, test_write_completion, NULL, test);
-    /* The first cancel should succeed, the second one fail */
-    if (!grilio_channel_cancel_request(io, id, TRUE) ||
-        grilio_channel_cancel_request(io, id, TRUE) ||
-        /* INT_MAX is a non-existent id */
-        grilio_channel_cancel_request(io, INT_MAX, TRUE)) {
-        test->ret = RET_ERR;
-    }
-}
-
-static
-gboolean
-test_write_error1_init(
-    Test* test)
-{
-    grilio_channel_add_connected_handler(test->io, test_write_error1, test);
-    /* grilio_channel_new_socket("/tmp" must fail */
-    return !grilio_channel_new_socket("/tmp", NULL);
-}
-
-static
-gboolean
-test_write_error2_init(
-    Test* test)
-{
-    grilio_channel_add_connected_handler(test->io, test_write_error2, test);
-    /* grilio_channel_new_socket("/tmp" must fail */
-    return !grilio_channel_new_socket("/tmp", NULL);
-}
-
-static
-gboolean
-test_write_error3_init(
-    Test* test)
-{
-    grilio_channel_add_connected_handler(test->io, test_write_error3, test);
-    /* grilio_channel_new_socket("/tmp" must fail */
-    return !grilio_channel_new_socket("/tmp", NULL);
+    test_write_error("WriteError3", test_write_error3_connected);
 }
 
 /*==========================================================================*
- * EOF
+ * Disconnect
  *==========================================================================*/
 
 static
 void
-test_eof_handler(
+test_disconnect_handler(
     GRilIoChannel* io,
     void* user_data)
 {
     Test* test = user_data;
-    test->ret = RET_OK;
     g_main_loop_quit(test->loop);
 }
 
 static
-gboolean
-test_eof_init(
-    Test* test)
+void
+test_disconnect(
+    void)
 {
-    grilio_channel_add_disconnected_handler(test->io, test_eof_handler, test);
+    Test* test = test_new(Test, "EOF");
+    grilio_channel_add_disconnected_handler(test->io,
+        test_disconnect_handler, test);
     grilio_test_server_shutdown(test->server);
-    return TRUE;
+    g_main_loop_run(test->loop);
+    test_free(test);
 }
 
 /*==========================================================================*
@@ -552,15 +660,15 @@ test_short_packet_handler(
 {
     Test* test = user_data;
     GDEBUG("%s", GERRMSG(error));
-    test->ret = RET_OK;
     g_main_loop_quit(test->loop);
 }
 
 static
-gboolean
-test_short_packet_init(
-    Test* test)
+void
+test_short_packet(
+    void)
 {
+    Test* test = test_new(Test, "EOF");
     static char data[2] = {0xff, 0xff};
     guint32 pktlen = GINT32_TO_BE(sizeof(data));
     grilio_channel_add_error_handler(test->io, test_short_packet_handler, test);
@@ -569,14 +677,15 @@ test_short_packet_init(
     /* These two do nothing (but improve branch coverage): */
     grilio_channel_add_error_handler(NULL, test_short_packet_handler, NULL);
     grilio_channel_add_error_handler(test->io, NULL, NULL);
-    return TRUE;
+    g_main_loop_run(test->loop);
+    test_free(test);
 }
 
 /*==========================================================================*
  * Logger
  *==========================================================================*/
 
-typedef struct test_logger {
+typedef struct test_logger_data {
     Test test;
     guint test_log;
     guint bytes_in;
@@ -624,43 +733,49 @@ test_logger_cb(
      * 32 bytes RIL_REQUEST_TEST
      */
     if (log->bytes_in == (16 + 32) && log->bytes_out == 8) {
-        log->test.ret = RET_OK;
         g_main_loop_quit(log->test.loop);
     }
 }
 
 static
-gboolean
-test_logger_init(
-    Test* test)
+void
+test_logger(
+    void)
 {
-    TestLogger* log = G_CAST(test, TestLogger, test);
+    TestLogger* log = test_new(TestLogger, "Logger");
+    Test* test = &log->test;
     guint id[3];
+    int level = GLOG_LEVEL_ALWAYS;
+
+    g_assert(!grilio_channel_add_logger(NULL, NULL, NULL));
+    g_assert(!grilio_channel_add_logger(test->io, NULL, NULL));
 
     /* Remove default logger and re-add it with GLOG_LEVEL_ALWAYS, mainly
      * to improve code coverage. Remove it twice to make sure that invalid
      * logger ids are handled properly, i.e. ignored. */
     grilio_channel_remove_logger(test->io, test->log);
     grilio_channel_remove_logger(test->io, test->log);
-    test->log = grilio_channel_add_default_logger(test->io, GLOG_LEVEL_ALWAYS);
+    test->log = grilio_channel_add_default_logger(test->io, level);
     log->test_log = grilio_channel_add_logger(test->io, test_logger_cb, log);
+    g_assert(test->log);
+    g_assert(log->test_log);
+    gutil_log(GLOG_MODULE_CURRENT, level, "%s", "");
 
     id[0] = test_basic_request(test, test_logger_response);
     id[1] = test_basic_request(test, test_logger_response);
     id[2] = test_basic_request(test, test_logger_response);
     grilio_channel_cancel_request(test->io, id[0], TRUE);
     grilio_channel_cancel_request(test->io, id[1], FALSE);
-    return id[0] && id[1] && id[2] &&
-        test_basic_response_ok(test->server, "LOGTEST", id[2]);
-}
+    g_assert(id[0]);
+    g_assert(id[1]);
+    g_assert(id[2]);
+    g_assert(test_basic_response_ok(test->server, "LOGTEST", id[2]));
 
-static
-void
-test_logger_destroy(
-    Test* test)
-{
-    TestLogger* log = G_CAST(test, TestLogger, test);
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
     grilio_channel_remove_logger(test->io, log->test_log);
+    test_free(test);
 }
 
 /*==========================================================================*
@@ -676,7 +791,7 @@ enum test_handlers_event {
     TEST_HANDLERS_DONE_EVENT
 };
 
-typedef struct test_handlers {
+typedef struct test_handlers_data {
     Test test;
     int count1;
     int count2;
@@ -719,32 +834,30 @@ test_handlers_remove(
     guint len,
     void* user_data)
 {
-    GASSERT(code == TEST_HANDLERS_REMOVE_EVENT);
-    if (code == TEST_HANDLERS_REMOVE_EVENT) {
-        TestHandlers* h = user_data;
-        Test* test = &h->test;
-        int i;
+    TestHandlers* h = user_data;
+    Test* test = &h->test;
+    int i;
 
-        GDEBUG("Removing handlers");
-        grilio_channel_remove_handlers(test->io, h->id2, TEST_HANDLERS_COUNT);
+    g_assert(code == TEST_HANDLERS_REMOVE_EVENT);
+    GDEBUG("Removing handlers");
+    grilio_channel_remove_handlers(test->io, h->id2, TEST_HANDLERS_COUNT);
 
-        /* Doing it a few more times makes no difference */
-        grilio_channel_remove_handlers(test->io, h->id2, TEST_HANDLERS_COUNT);
-        grilio_channel_remove_handlers(test->io, h->id2, 0);
-        grilio_channel_remove_handlers(test->io, NULL, 0);
-        grilio_channel_remove_handlers(NULL, NULL, 0);
+    /* Doing it a few more times makes no difference */
+    grilio_channel_remove_handlers(test->io, h->id2, TEST_HANDLERS_COUNT);
+    grilio_channel_remove_handlers(test->io, h->id2, 0);
+    grilio_channel_remove_handlers(test->io, NULL, 0);
+    grilio_channel_remove_handlers(NULL, NULL, 0);
 
-        /* Submit more events. This time they should only increment count1 */
-        for (i=0; i<TEST_HANDLERS_INC_EVENTS_COUNT; i++) {
-            test_handlers_submit_event(test, TEST_HANDLERS_INC_EVENT);
-        }
-
-        /* Once those are handled, stop the test */
-        grilio_channel_remove_handler(test->io, h->next_event_id);
-        h->next_event_id = grilio_channel_add_unsol_event_handler(test->io,
-                test_handlers_done, TEST_HANDLERS_DONE_EVENT, h);
-        test_handlers_submit_event(test, TEST_HANDLERS_DONE_EVENT);
+    /* Submit more events. This time they should only increment count1 */
+    for (i=0; i<TEST_HANDLERS_INC_EVENTS_COUNT; i++) {
+        test_handlers_submit_event(test, TEST_HANDLERS_INC_EVENT);
     }
+
+    /* Once those are handled, stop the test */
+    grilio_channel_remove_handler(test->io, h->next_event_id);
+    h->next_event_id = grilio_channel_add_unsol_event_handler(test->io,
+        test_handlers_done, TEST_HANDLERS_DONE_EVENT, h);
+    test_handlers_submit_event(test, TEST_HANDLERS_DONE_EVENT);
 }
 
 static void
@@ -756,20 +869,21 @@ test_handlers_inc(
     void* user_data)
 {
     int* count = user_data;
-    GASSERT(code == TEST_HANDLERS_INC_EVENT);
-    if (code == TEST_HANDLERS_INC_EVENT) {
-        (*count)++;
-        GDEBUG("Event %u data %p value %d", code, count, *count);
-    }
+    g_assert(code == TEST_HANDLERS_INC_EVENT);
+    (*count)++;
+    GDEBUG("Event %u data %p value %d", code, count, *count);
 }
 
 static
-gboolean
-test_handlers_init(
-    Test* test)
+void
+test_handlers(
+    void)
 {
-    TestHandlers* h = G_CAST(test, TestHandlers, test);
+    TestHandlers* h = test_new(TestHandlers, "Handlers");
+    Test* test = &h->test;
     int i;
+
+    /* Prepare the test */
     for (i=0; i<TEST_HANDLERS_COUNT; i++) {
         h->id1[i] = grilio_channel_add_unsol_event_handler(test->io,
             test_handlers_inc, TEST_HANDLERS_INC_EVENT, &h->count1);
@@ -782,41 +896,91 @@ test_handlers_init(
     h->next_event_id = grilio_channel_add_unsol_event_handler(test->io,
         test_handlers_remove, TEST_HANDLERS_REMOVE_EVENT, h);
     test_handlers_submit_event(test, TEST_HANDLERS_REMOVE_EVENT);
-    return TRUE;
-}
 
-static
-int
-test_handlers_check(
-    Test* test)
-{
-    TestHandlers* h = G_CAST(test, TestHandlers, test);
-    if (h->count1 == 2*TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT &&
-        h->count2 == TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT) {
-        int i;
-        for (i=0; i<TEST_HANDLERS_COUNT; i++) {
-            GASSERT(!h->id2[i]);
-            if (h->id2[i]) {
-                return RET_ERR;
-            }
-        }
-        return RET_OK;
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    /* Check the final state */
+    g_assert(h->count1 == 2*TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT);
+    g_assert(h->count2 == TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT);
+    for (i=0; i<TEST_HANDLERS_COUNT; i++) {
+        g_assert(!h->id2[i]);
     }
-    return RET_ERR;
-}
 
-static
-void
-test_handlers_destroy(
-    Test* test)
-{
-    TestHandlers* h = G_CAST(test, TestHandlers, test);
+    /* Clean up */
     grilio_channel_remove_handlers(test->io, h->id1, TEST_HANDLERS_COUNT);
     grilio_channel_remove_handlers(test->io, h->id2, TEST_HANDLERS_COUNT);
     grilio_channel_remove_handler(test->io, h->next_event_id);
     /* These do nothing: */
     grilio_channel_remove_handler(test->io, 0);
     grilio_channel_remove_handler(NULL, 0);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * EarlyResp
+ *==========================================================================*/
+
+static
+void
+test_early_resp_no_completion(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    int* resp_count = user_data;
+    GDEBUG("Request 2 completed with status %d", status);
+    g_assert(status == GRILIO_STATUS_CANCELLED);
+    (*resp_count)++;
+}
+
+static
+void
+test_early_resp_req2_completion(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    GDEBUG("Request 2 completed with status %d", status);
+    g_assert(status == GRILIO_STATUS_OK);
+    g_main_loop_quit(test->loop);
+}
+
+static
+void
+test_early_resp(
+    void)
+{
+    Test* test = test_new(Test, "EarlyResp");
+    GRilIoRequest* req = grilio_request_new();
+    int resp_count = 0;
+
+    /* This one is going to end the test (eventually). */
+    const guint id1 = grilio_channel_send_request_full(test->io, NULL,
+        RIL_REQUEST_TEST, test_early_resp_req2_completion, NULL, test);
+    /* Response to this request will arrive before the request has been
+     * sent, so it will be ignored. */
+    const guint id2 = grilio_channel_send_request_full(test->io, req,
+        RIL_REQUEST_TEST, test_early_resp_no_completion, NULL, &resp_count);
+
+    g_assert(test_basic_response_ok(test->server, "IGNORE", id2));
+    g_assert(test_basic_response_ok(test->server, "DONE", id1));
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    /* Check the request state. It should be SENT */
+    g_assert(grilio_request_status(req) == GRILIO_REQUEST_SENT);
+    g_assert(!resp_count);
+    grilio_channel_cancel_all(test->io, TRUE);
+    g_assert(resp_count == 1);
+    grilio_request_unref(req);
+    test_free(test);
 }
 
 /*==========================================================================*
@@ -832,7 +996,7 @@ test_handlers_destroy(
  * complete with error and cancel #3. We expect reply count for #3 to be 1
  *==========================================================================*/
 
-typedef struct test_retry1 {
+typedef struct test_retry1_data {
     Test test;
     int req2_status;
     int req3_completed;
@@ -928,6 +1092,7 @@ test_retry1_start(
 {
     Test* test = user_data;
     TestRetry1* retry = G_CAST(test, TestRetry1, test);
+    GRilIoQueue* q;
 
     grilio_channel_send_request_full(test->io, retry->req1,
         RIL_REQUEST_TEST, test_retry1_req1_timeout, NULL, test);
@@ -946,6 +1111,15 @@ test_retry1_start(
         RIL_REQUEST_TEST, test_retry1_count_completions, NULL,
         &retry->req6_completed);
 
+    /* Can't send the same request twice */
+    q = grilio_queue_new(test->io);
+    g_assert(!grilio_queue_send_request(q, retry->req6, RIL_REQUEST_TEST));
+    grilio_queue_unref(q);
+    g_assert(!grilio_channel_send_request(test->io, retry->req6,
+        RIL_REQUEST_TEST));
+    g_assert(grilio_channel_get_request(test->io,
+        grilio_request_id(retry->req6)) == retry->req6);
+
     grilio_test_server_add_response(test->server, NULL,
         retry->req2->req_id, RIL_E_GENERIC_FAILURE);
     grilio_test_server_add_response(test->server, NULL,
@@ -960,12 +1134,14 @@ test_retry1_start(
 }
 
 static
-gboolean
-test_retry1_init(
-    Test* test)
+void
+test_retry1(
+    void)
 {
-    TestRetry1* retry = G_CAST(test, TestRetry1, test);
+    TestRetry1* retry = test_new(TestRetry1, "Retry1");
+    Test* test = &retry->test;
 
+    /* Prepare the test */
     retry->req1 = grilio_request_new();
     retry->req2 = grilio_request_new();
     retry->req3 = grilio_request_new();
@@ -981,79 +1157,42 @@ test_retry1_init(
     grilio_request_set_retry(retry->req5, INT_MAX, -1);
     grilio_request_set_retry(retry->req6, INT_MAX, -1);
 
-    GASSERT(!test->io->connected);
+    /* Start after we have been connected */
+    g_assert(!test->io->connected);
     grilio_channel_add_connected_handler(test->io, test_retry1_start, test);
-    return TRUE;
-}
 
-static
-int
-test_retry1_check(
-    Test* test)
-{
-    TestRetry1* retry = G_CAST(test, TestRetry1, test);
-    if (grilio_request_status(retry->req4) != GRILIO_REQUEST_RETRY) {
-        GDEBUG("Unexpected request 4 status %d",
-            grilio_request_status(retry->req4));
-    } else if (grilio_request_status(retry->req5) != GRILIO_REQUEST_RETRY) {
-        GDEBUG("Unexpected request 5 status %d",
-            grilio_request_status(retry->req5));
-    } else if (grilio_request_status(retry->req6) != GRILIO_REQUEST_RETRY) {
-        GDEBUG("Unexpected request 6 status %d",
-            grilio_request_status(retry->req6));
-    } else {
-        grilio_channel_cancel_request(test->io,
-            grilio_request_id(retry->req5), TRUE);
-        grilio_channel_cancel_request(test->io,
-            grilio_request_id(retry->req4), TRUE);
-        grilio_channel_cancel_all(test->io, TRUE);
-        if (grilio_request_status(retry->req4) !=GRILIO_REQUEST_CANCELLED) {
-            GDEBUG("Unexpected request 4 status %d after cancel",
-                grilio_request_status(retry->req4));
-        } else if (grilio_request_status(retry->req5) !=
-                   GRILIO_REQUEST_CANCELLED) {
-            GDEBUG("Unexpected request 5 status %d after cancel",
-                grilio_request_status(retry->req5));
-        } else if (retry->req2_status != RIL_E_GENERIC_FAILURE) {
-            GDEBUG("Unexpected request 2 completion status %d",
-                retry->req2_status);
-        } else if (retry->req3_completed != 1) {
-            GDEBUG("Unexpected request 3 completion count %d",
-                retry->req3_completed);
-        } else if (retry->req4_completed != 1) {
-            GDEBUG("Unexpected request 4 completion count %d",
-                retry->req4_completed);
-        } else if (grilio_request_retry_count(retry->req1) != 1) {
-            GDEBUG("Unexpected request 1 retry count %d",
-                grilio_request_retry_count(retry->req1));
-        } else if (grilio_request_retry_count(retry->req2) != 1) {
-            GDEBUG("Unexpected request 3 retry count %d",
-                grilio_request_retry_count(retry->req2));
-        } else if (grilio_request_retry_count(retry->req3) != 1) {
-            GDEBUG("Unexpected request 3 retry count %d",
-                grilio_request_retry_count(retry->req3));
-        } else if (grilio_request_retry_count(retry->req4) != 0) {
-            GDEBUG("Unexpected request 4 retry count %d",
-                grilio_request_retry_count(retry->req4));
-        } else {
-            return RET_OK;
-        }
-    }
-    return RET_ERR;
-}
+    /* Run the test */
+    g_main_loop_run(test->loop);
 
-static
-void
-test_retry1_destroy(
-    Test* test)
-{
-    TestRetry1* retry = G_CAST(test, TestRetry1, test);
+    /* Check the final state */
+    g_assert(grilio_request_status(retry->req4) == GRILIO_REQUEST_RETRY);
+    g_assert(grilio_request_status(retry->req5) == GRILIO_REQUEST_RETRY);
+    g_assert(grilio_request_status(retry->req6) == GRILIO_REQUEST_RETRY);
+
+    grilio_channel_cancel_request(test->io,
+        grilio_request_id(retry->req5), TRUE);
+    grilio_channel_cancel_request(test->io,
+        grilio_request_id(retry->req4), TRUE);
+    grilio_channel_cancel_all(test->io, TRUE);
+
+    g_assert(grilio_request_status(retry->req4) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(retry->req5) == GRILIO_REQUEST_CANCELLED);
+    g_assert(retry->req2_status == RIL_E_GENERIC_FAILURE);
+    g_assert(retry->req3_completed == 1);
+    g_assert(retry->req4_completed == 1);
+    g_assert(grilio_request_retry_count(retry->req1) == 1);
+    g_assert(grilio_request_retry_count(retry->req2) == 1);
+    g_assert(grilio_request_retry_count(retry->req3) == 1);
+    g_assert(grilio_request_retry_count(retry->req4) == 0);
+
+    /* Clean up */
     grilio_request_unref(retry->req1);
     grilio_request_unref(retry->req2);
     grilio_request_unref(retry->req3);
     grilio_request_unref(retry->req4);
     grilio_request_unref(retry->req5);
     grilio_request_unref(retry->req6);
+    test_free(test);
 }
 
 /*==========================================================================*
@@ -1063,7 +1202,7 @@ test_retry1_destroy(
  * are rejected, the third one times out.
  *==========================================================================*/
 
-typedef struct test_retry2 {
+typedef struct test_retry2_data {
     Test test;
     guint log_id;
     guint req_id;
@@ -1107,7 +1246,7 @@ test_retry2_log(
             retry->req_id = id;
         } else {
             retry->req_id++;
-            GASSERT(retry->req_id == id);
+            g_assert(retry->req_id == id);
         }
         if (retry->req_id == id) {
             GDEBUG("Failing request %u", id);
@@ -1131,46 +1270,37 @@ test_retry2_start(
 }
 
 static
-gboolean
-test_retry2_init(
-    Test* test)
+void
+test_retry2(
+    void)
 {
-    TestRetry2* retry = G_CAST(test, TestRetry2, test);
+    TestRetry2* retry = test_new(TestRetry2, "Retry2");
+    Test* test = &retry->test;
+    guint id;
 
+    /* Prepare the test */
     retry->log_id = grilio_channel_add_logger(test->io, test_retry2_log, test);
     retry->req = grilio_request_new();
     grilio_request_set_retry(retry->req, 10, 2);
 
-    GASSERT(!test->io->connected);
+    /* Start after we have been connected */
+    g_assert(!test->io->connected);
     grilio_channel_add_connected_handler(test->io, test_retry2_start, test);
-    return TRUE;
-}
 
-static
-int
-test_retry2_check(
-    Test* test)
-{
-    TestRetry2* retry = G_CAST(test, TestRetry2, test);
-    if (grilio_request_retry_count(retry->req) != 2) {
-        GDEBUG("Unexpected request retry count %d",
-            grilio_request_retry_count(retry->req));
-    } else {
-        return RET_OK;
-    }
-    return RET_ERR;
-}
+    /* Run the test */
+    g_main_loop_run(test->loop);
 
-static
-void
-test_retry2_destroy(
-    Test* test)
-{
-    TestRetry2* retry = G_CAST(test, TestRetry2, test);
-    guint id = grilio_request_id(retry->req);
-    grilio_channel_cancel_request(test->io, id, FALSE);
+    /* Check the final state */
+    g_assert(grilio_request_retry_count(retry->req) == 2);
+
+    /* Clean up */
+    id = grilio_request_id(retry->req);
+    g_assert(grilio_request_status(retry->req) == GRILIO_REQUEST_DONE);
+    /* Since it's done, cancel will fail */
+    g_assert(!grilio_channel_cancel_request(test->io, id, FALSE));
     grilio_request_unref(retry->req);
     grilio_channel_remove_logger(test->io, retry->log_id);
+    test_free(test);
 }
 
 /*==========================================================================*
@@ -1187,7 +1317,7 @@ test_retry2_destroy(
  *
  *==========================================================================*/
 
-typedef struct test_retry3 {
+typedef struct test_retry3_data {
     Test test;
     guint dummy_id;
     GRilIoRequest* req1;
@@ -1281,12 +1411,15 @@ test_retry3_start(
 }
 
 static
-gboolean
-test_retry3_init(
-    Test* test)
+void
+test_retry3(
+    void)
 {
-    TestRetry3* retry = G_CAST(test, TestRetry3, test);
+    TestRetry3* retry = test_new(TestRetry3, "Retry3");
+    Test* test = &retry->test;
+    guint id1, id2;
 
+    /* Prepare the test */
     retry->req1 = grilio_request_new();
     retry->req2 = grilio_request_new();
     grilio_request_set_timeout(retry->req1, INT_MAX);
@@ -1294,41 +1427,21 @@ test_retry3_init(
     grilio_request_set_retry(retry->req1, INT_MAX, 1);
     grilio_request_set_retry(retry->req2, INT_MAX-1, 1);
 
-    GASSERT(!test->io->connected);
+    /* Start after we have been connected */
+    g_assert(!test->io->connected);
     grilio_channel_add_connected_handler(test->io, test_retry3_start, test);
-    return TRUE;
-}
 
-static
-int
-test_retry3_check(
-    Test* test)
-{
-    TestRetry3* retry = G_CAST(test, TestRetry3, test);
-    if (grilio_request_retry_count(retry->req1) != 1) {
-        GDEBUG("Unexpected request 1 retry count %d",
-            grilio_request_retry_count(retry->req1));
-    } else if (grilio_request_retry_count(retry->req2) != 1) {
-        GDEBUG("Unexpected request 2 retry count %d",
-            grilio_request_retry_count(retry->req2));
-    } else if (retry->status1 != GRILIO_STATUS_CANCELLED) {
-        GDEBUG("Unexpected completion status %d for req 1", retry->status1);
-    } else if (retry->status2 != GRILIO_STATUS_CANCELLED) {
-        GDEBUG("Unexpected completion status %d for req 2", retry->status2);
-    } else {
-        return RET_OK;
-    }
-    return RET_ERR;
-}
+    /* Run the test */
+    g_main_loop_run(test->loop);
 
-static
-void
-test_retry3_destroy(
-    Test* test)
-{
-    TestRetry3* retry = G_CAST(test, TestRetry3, test);
-    const guint id1 = grilio_request_id(retry->req1);
-    const guint id2 = grilio_request_id(retry->req2);
+    /* Check the final state */
+    g_assert(grilio_request_retry_count(retry->req1) == 1);
+    g_assert(grilio_request_retry_count(retry->req2) == 1);
+    g_assert(retry->status1 == GRILIO_STATUS_CANCELLED);
+    g_assert(retry->status2 == GRILIO_STATUS_CANCELLED);
+
+    id1 = grilio_request_id(retry->req1);
+    id2 = grilio_request_id(retry->req2);
     grilio_channel_cancel_request(test->io, id1, FALSE);
     grilio_channel_cancel_request(test->io, id2, FALSE);
     grilio_request_unref(retry->req1);
@@ -1339,7 +1452,7 @@ test_retry3_destroy(
  * Timeout
  *==========================================================================*/
 
-typedef struct test_timeout {
+typedef struct test_timeout_data {
     Test test;
     int timeout_count;
     guint req_id;
@@ -1357,7 +1470,6 @@ test_timeout_done(
     GDEBUG("Cancelling request %u", timeout->req_id);
     if (grilio_channel_cancel_request(test->io, timeout->req_id, TRUE) &&
         timeout->timeout_count == 1) {
-        test->ret = RET_OK;
         g_main_loop_quit(test->loop);
     }
     return FALSE;
@@ -1423,272 +1535,47 @@ test_timeout_start(
 }
 
 static
-gboolean
-test_timeout_init(
-    Test* test)
-{
-    test_timeout_submit_requests(test, test_timeout_start);
-    return TRUE;
-}
-
-static
 void
-test_timeout_destroy(
-    Test* test)
+test_timeout(
+    void)
 {
-    TestTimeout* timeout = G_CAST(test, TestTimeout, test);
-    if (timeout->timer_id) g_source_remove(timeout->timer_id);
+    TestTimeout* timeout = test_new(TestTimeout, "Timeout");
+    Test* test = &timeout->test;
+    test_timeout_submit_requests(test, test_timeout_start);
+    g_assert(!timeout->timer_id);
+    test_free(test);
 }
 
 /*==========================================================================*
  * Common
  *==========================================================================*/
 
-static const TestDesc all_tests[] = {
-    {
-        "Connected",
-        sizeof(TestConnected),
-        test_connected_init,
-        test_connected_check,
-        test_connected_destroy
-    },{
-        "Basic",
-        sizeof(Test),
-        test_basic_init,
-        NULL,
-        NULL
-    },{
-        "Queue",
-        sizeof(TestQueue),
-        test_queue_init,
-        NULL,
-        test_queue_destroy
-    },{
-        "WriteError1",
-        sizeof(Test),
-        test_write_error1_init,
-        NULL,
-        NULL
-    },{
-        "WriteError2",
-        sizeof(Test),
-        test_write_error2_init,
-        NULL,
-        NULL
-     },{
-        "WriteError3",
-        sizeof(Test),
-        test_write_error3_init,
-        NULL,
-        NULL
-   },{
-        "EOF",
-        sizeof(Test),
-        test_eof_init,
-        NULL,
-        NULL
-    },{
-        "ShortPacket",
-        sizeof(Test),
-        test_short_packet_init,
-        NULL,
-        NULL
-    },{
-        "Logger",
-        sizeof(TestLogger),
-        test_logger_init,
-        NULL,
-        test_logger_destroy
-    },{
-        "Handlers",
-        sizeof(TestHandlers),
-        test_handlers_init,
-        test_handlers_check,
-        test_handlers_destroy
-    },{
-        "Retry1",
-        sizeof(TestRetry1),
-        test_retry1_init,
-        test_retry1_check,
-        test_retry1_destroy
-    },{
-        "Retry2",
-        sizeof(TestRetry2),
-        test_retry2_init,
-        test_retry2_check,
-        test_retry2_destroy
-    },{
-        "Retry3",
-        sizeof(TestRetry3),
-        test_retry3_init,
-        test_retry3_check,
-        test_retry3_destroy
-    },{
-        "Timeout",
-        sizeof(TestTimeout),
-        test_timeout_init,
-        NULL,
-        test_timeout_destroy
-    }
-};
-
-static
-gboolean
-test_timeout(
-    gpointer data)
-{
-    Test* test = data;
-    test->timeout_id = 0;
-    test->ret = RET_TIMEOUT;
-    g_main_loop_quit(test->loop);
-    GERR("%s TIMEOUT", test->desc->name);
-    return FALSE;
-}
-
-static
-int
-test_done(
-    Test* test,
-    gboolean destroy)
-{
-    int ret = ((test->ret != RET_TIMEOUT && test->desc->check) ?
-        test->desc->check(test) : test->ret);
-    if (test->desc->destroy) test->desc->destroy(test);
-    if (destroy && test->timeout_id) g_source_remove(test->timeout_id);
-    /* These function should handle NULL arguments */
-    grilio_channel_remove_logger(NULL, 0);
-    grilio_channel_shutdown(NULL, FALSE);
-    grilio_channel_unref(NULL);
-    /* Remove logger twice, the second call should do nothing */
-    grilio_channel_remove_logger(test->io, test->log);
-    grilio_channel_remove_logger(test->io, test->log);
-    grilio_channel_shutdown(test->io, FALSE);
-    grilio_channel_unref(test->io);
-    g_main_loop_unref(test->loop);
-    grilio_test_server_free(test->server);
-    g_free(test);
-    return ret;
-}
-
-static
-Test*
-test_new(
-    const TestDesc* desc,
-    gboolean debug)
-{
-    Test* test = g_malloc(desc->size);
-    GRilIoTestServer* server = grilio_test_server_new();
-    int fd = grilio_test_server_fd(server);
-    memset(test, 0, desc->size);
-    test->ret = RET_ERR;
-    test->loop = g_main_loop_new(NULL, FALSE);
-    test->desc = desc;
-    test->server = server;
-    test->io = grilio_channel_new_fd(fd, "SUB1", FALSE);
-    grilio_channel_set_name(test->io, "TEST");
-    grilio_channel_set_name(NULL, NULL); /* This one does nothing */
-    test->log = grilio_channel_add_default_logger(test->io, GLOG_LEVEL_VERBOSE);
-    if (!debug) {
-        test->timeout_id = g_timeout_add_seconds(TEST_TIMEOUT,
-            test_timeout, test);
-    }
-    if (desc->init) {
-        if (desc->init(test)) {
-            return test;
-        } else {
-            test_done(test, FALSE);
-            return NULL;
-        }
-    } else {
-        return test;
-    }
-}
-
-static
-int
-test_run_once(
-    const TestDesc* desc,
-    gboolean debug)
-{
-    int ret = RET_ERR;
-    Test* test = test_new(desc, debug);
-    if (test) {
-        g_main_loop_run(test->loop);
-        ret = test_done(test, TRUE);
-    }
-    GINFO("%s: %s", (ret == RET_OK) ? "OK" : "FAILED", desc->name);
-    return ret;
-}
-
-static
-int
-test_run(
-    const char* name,
-    gboolean debug)
-{
-    int i, ret;
-    if (name) {
-        const TestDesc* found = NULL;
-        for (i=0, ret = RET_ERR; i<G_N_ELEMENTS(all_tests); i++) {
-            const TestDesc* test = all_tests + i;
-            if (!strcmp(test->name, name)) {
-                ret = test_run_once(test, debug);
-                found = test;
-                break;
-            }
-        }
-        if (!found) GERR("No such test: %s", name);
-    } else {
-        for (i=0, ret = RET_OK; i<G_N_ELEMENTS(all_tests); i++) {
-            int test_status = test_run_once(all_tests + i, debug);
-            if (ret == RET_OK && test_status != RET_OK) ret = test_status;
-        }
-    }
-    return ret;
-}
+#define TEST_PREFIX "/io/"
 
 int main(int argc, char* argv[])
 {
-    int ret = RET_ERR;
-    gboolean verbose = FALSE;
-    gboolean debug = FALSE;
-    GError* error = NULL;
-    GOptionContext* options;
-    GOptionEntry entries[] = {
-        { "verbose", 'v', 0, G_OPTION_ARG_NONE, &verbose,
-          "Enable verbose output", NULL },
-        { "debug", 'd', 0, G_OPTION_ARG_NONE, &debug,
-          "Disable timeout for debugging", NULL },
-        { NULL }
-    };
-
-    options = g_option_context_new("[TEST]");
-    g_option_context_add_main_entries(options, entries, NULL);
-    if (g_option_context_parse(options, &argc, &argv, &error)) {
-        signal(SIGPIPE, SIG_IGN);
-        if (verbose) {
-            gutil_log_default.level = GLOG_LEVEL_VERBOSE;
-        } else {
-            gutil_log_timestamp = FALSE;
-            gutil_log_default.level = GLOG_LEVEL_INFO;
-            grilio_log.level = GLOG_LEVEL_NONE;
-        }
-        if (argc < 2) {
-            ret = test_run(NULL, debug);
-        } else {
-            int i;
-            for (i=1, ret = RET_OK; i<argc; i++) {
-                int test_status =  test_run(argv[i], debug);
-                if (ret == RET_OK && test_status != RET_OK) ret = test_status;
-            }
-        }
-    } else {
-        fprintf(stderr, "%s\n", GERRMSG(error));
-        g_error_free(error);
-        ret = RET_ERR;
-    }
-    g_option_context_free(options);
-    return ret;
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+    g_type_init();
+    G_GNUC_END_IGNORE_DEPRECATIONS;
+    g_test_init(&argc, &argv, NULL);
+    g_test_add_func(TEST_PREFIX "Connected", test_connected);
+    g_test_add_func(TEST_PREFIX "Basic", test_basic);
+    g_test_add_func(TEST_PREFIX "Queue", test_queue);
+    g_test_add_func(TEST_PREFIX "WriteError1", test_write_error1);
+    g_test_add_func(TEST_PREFIX "WriteError2", test_write_error2);
+    g_test_add_func(TEST_PREFIX "WriteError3", test_write_error3);
+    g_test_add_func(TEST_PREFIX "Disconnect", test_disconnect);
+    g_test_add_func(TEST_PREFIX "ShortPacket", test_short_packet);
+    g_test_add_func(TEST_PREFIX "Logger", test_logger);
+    g_test_add_func(TEST_PREFIX "Handlers", test_handlers);
+    g_test_add_func(TEST_PREFIX "EarlyResp", test_early_resp);
+    g_test_add_func(TEST_PREFIX "Retry1", test_retry1);
+    g_test_add_func(TEST_PREFIX "Retry2", test_retry2);
+    g_test_add_func(TEST_PREFIX "Retry3", test_retry3);
+    g_test_add_func(TEST_PREFIX "Timeout", test_timeout);
+    signal(SIGPIPE, SIG_IGN);
+    test_init(&test_opt, argc, argv);
+    return g_test_run();
 }
 
 /*

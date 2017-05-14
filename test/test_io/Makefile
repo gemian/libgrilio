@@ -1,6 +1,6 @@
 # -*- Mode: makefile-gmake -*-
 
 EXE = test_io
-COMMON_SRC = grilio_test_server.c
+COMMON_SRC = test_main.c grilio_test_server.c
 
 include ../common/Makefile
