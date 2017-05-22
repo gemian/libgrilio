@@ -53,6 +53,48 @@ grilio_request_sized_new(
     return req;
 }
 
+GRilIoRequest*
+grilio_request_array_utf8_new(
+    guint count,
+    const char* value,
+    ...)
+{
+    GRilIoRequest* req = grilio_request_sized_new(4*(count+1));
+    grilio_request_append_int32(req, count);
+    if (count > 0) {
+        guint i;
+        va_list args;
+        va_start(args, value);
+        grilio_request_append_utf8(req, value);
+        for (i=1; i<count; i++) {
+            grilio_request_append_utf8(req, va_arg(args, const char*));
+        }
+        va_end (args);
+    }
+    return req;
+}
+
+GRilIoRequest*
+grilio_request_array_int32_new(
+    guint count,
+    gint32 value,
+    ...)
+{
+    GRilIoRequest* req = grilio_request_sized_new(4*(count+1));
+    grilio_request_append_int32(req, count);
+    if (count > 0) {
+        guint i;
+        va_list args;
+        va_start(args, value);
+        grilio_request_append_int32(req, value);
+        for (i=1; i<count; i++) {
+            grilio_request_append_int32(req, va_arg(args, guint32));
+        }
+        va_end (args);
+    }
+    return req;
+}
+
 static
 void
 grilio_request_free(

@@ -45,6 +45,15 @@
 #endif
 #define UNICHAR1(c) UNICHAR2(0,c)
 
+static
+void
+test_parser_init_req(
+    GRilIoParser* p,
+    GRilIoRequest* req)
+{
+    grilio_parser_init(p, grilio_request_data(req), grilio_request_size(req));
+}
+
 /*==========================================================================*
  * BasicTypes
  *==========================================================================*/
@@ -197,8 +206,7 @@ test_strings(
     }
 
     GVERBOSE("Encoded %u bytes", grilio_request_size(req));
-    grilio_parser_init(&parser, grilio_request_data(req),
-        grilio_request_size(req));
+    test_parser_init_req(&parser, req);
 
     for (i=0; i<G_N_ELEMENTS(test_string); i++) {
         decoded[i] = grilio_parser_get_utf8(&parser);
@@ -222,8 +230,7 @@ test_strings(
     }
 
     /* Skip */
-    grilio_parser_init(&parser, grilio_request_data(req),
-        grilio_request_size(req));
+    test_parser_init_req(&parser, req);
     for (i=0; i<G_N_ELEMENTS(test_string); i++) {
         grilio_parser_skip_string(&parser);
         g_free(decoded[i]);
@@ -248,8 +255,7 @@ test_split(
     grilio_request_append_utf8(req, "\xD1\x85\xD1\x83\xD0\xB9 123");
     GVERBOSE("Encoded %u bytes", grilio_request_size(req));
 
-    grilio_parser_init(&parser, grilio_request_data(req),
-        grilio_request_size(req));
+    test_parser_init_req(&parser, req);
     out = grilio_parser_split_utf8(&parser, " ");
     g_assert(out);
     g_assert(g_strv_length(out) == 2);
@@ -311,8 +317,7 @@ test_invalid_utf8(
     grilio_request_append_utf8(req, in);
     GVERBOSE("Encoded %u bytes", grilio_request_size(req));
 
-    grilio_parser_init(&parser, grilio_request_data(req),
-        grilio_request_size(req));
+    test_parser_init_req(&parser, req);
 
     /* Invalid tail is dropped by grilio_request_append_utf8 */
     out = grilio_parser_get_utf8(&parser);
@@ -323,6 +328,112 @@ test_invalid_utf8(
 
     g_assert(grilio_parser_at_end(&parser));
     grilio_request_unref(req);
+}
+
+/*==========================================================================*
+ * ArrayUtf8
+ *==========================================================================*/
+
+static
+void
+test_array_utf8(
+    void)
+{
+    GRilIoRequest* req0 = grilio_request_array_utf8_new(0, NULL);
+    GRilIoRequest* req1 = grilio_request_array_utf8_new(1, NULL);
+    GRilIoRequest* req2 = grilio_request_array_utf8_new(2, "1", "2");
+    GRilIoParser parser;
+    char* str;
+    gint32 i32 = 0;
+
+    g_assert(grilio_request_size(req0) == 4);
+    g_assert(grilio_request_size(req1) == 8);
+    g_assert(grilio_request_size(req2) == 20);
+
+    test_parser_init_req(&parser, req0);
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(grilio_parser_get_int32(&parser, &i32));
+    g_assert(grilio_parser_at_end(&parser));
+    g_assert(i32 == 0);
+
+    test_parser_init_req(&parser, req1);
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(grilio_parser_get_int32(&parser, &i32));
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(i32 == 1);
+    g_assert(!grilio_parser_get_utf8(&parser));
+    g_assert(grilio_parser_at_end(&parser));
+
+    test_parser_init_req(&parser, req2);
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(grilio_parser_get_int32(&parser, &i32));
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(i32 == 2);
+    str = grilio_parser_get_utf8(&parser);
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(!g_strcmp0(str, "1"));
+    g_free(str);
+    str = grilio_parser_get_utf8(&parser);
+    g_assert(grilio_parser_at_end(&parser));
+    g_assert(!g_strcmp0(str, "2"));
+    g_free(str);
+
+    grilio_request_unref(req0);
+    grilio_request_unref(req1);
+    grilio_request_unref(req2);
+}
+
+/*==========================================================================*
+ * ArrayInt32
+ *==========================================================================*/
+
+static
+void
+test_array_int32(
+    void)
+{
+    GRilIoRequest* req0 = grilio_request_array_int32_new(0, 0);
+    GRilIoRequest* req1 = grilio_request_array_int32_new(1, 0);
+    GRilIoRequest* req2 = grilio_request_array_int32_new(2, 1, 2);
+    GRilIoParser parser;
+    gint32 i32 = 0;
+
+    g_assert(grilio_request_size(req0) == 4);
+    g_assert(grilio_request_size(req1) == 8);
+    g_assert(grilio_request_size(req2) == 12);
+
+    test_parser_init_req(&parser, req0);
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(grilio_parser_get_int32(&parser, &i32));
+    g_assert(grilio_parser_at_end(&parser));
+    g_assert(i32 == 0);
+
+    test_parser_init_req(&parser, req1);
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(grilio_parser_get_int32(&parser, &i32));
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(i32 == 1);
+    g_assert(grilio_parser_get_int32(&parser, &i32));
+    g_assert(grilio_parser_at_end(&parser));
+    g_assert(i32 == 0);
+
+    test_parser_init_req(&parser, req2);
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(grilio_parser_get_int32(&parser, &i32));
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(i32 == 2);
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(grilio_parser_get_int32(&parser, &i32));
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(i32 == 1);
+    g_assert(!grilio_parser_at_end(&parser));
+    g_assert(grilio_parser_get_int32(&parser, &i32));
+    g_assert(grilio_parser_at_end(&parser));
+    g_assert(i32 == 2);
+
+    grilio_request_unref(req0);
+    grilio_request_unref(req1);
+    grilio_request_unref(req2);
 }
 
 /*==========================================================================*
@@ -375,6 +486,8 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "Split", test_split);
     g_test_add_func(TEST_PREFIX "Broken", test_broken);
     g_test_add_func(TEST_PREFIX "InvalidUtf8", test_invalid_utf8);
+    g_test_add_func(TEST_PREFIX "ArrayUtf8", test_array_utf8);
+    g_test_add_func(TEST_PREFIX "ArrayInt32", test_array_int32);
     g_test_add_func(TEST_PREFIX "Format", test_format);
     test_init(&test_opt, argc, argv);
     return g_test_run();
