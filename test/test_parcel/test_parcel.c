@@ -39,10 +39,11 @@
 #include <gutil_log.h>
 
 #if G_BYTE_ORDER == G_LITTLE_ENDIAN
-#  define UNICHAR2(c) c, 0
+#  define UNICHAR2(high,low) low, high
 #elif G_BYTE_ORDER == G_BIG_ENDIAN
-#  define UNICHAR2(c) 0, c
+#  define UNICHAR2(high,low) high, low
 #endif
+#define UNICHAR1(c) UNICHAR2(0,c)
 
 /*==========================================================================*
  * BasicTypes
@@ -156,7 +157,10 @@ void
 test_strings(
     void)
 {
-    static const char* test_string[] = { NULL, "", "1", "12", "123", "1234" };
+    static const char* test_string[] = {
+        NULL, "", "1", "12", "123", "1234",
+        "\xD1\x82\xD0\xB5\xD1\x81\xD1\x82"
+    };
     static const guchar valid_data[] = {
         /* NULL */
         0xff, 0xff, 0xff, 0xff,
@@ -165,16 +169,21 @@ test_strings(
         0x00, 0x00, 0xff, 0xff,
         /* "1" */
         0x01, 0x00, 0x00, 0x00,
-        UNICHAR2('1'), 0x00, 0x00,
+        UNICHAR1('1'), 0x00, 0x00,
         /* "12" */
         0x02, 0x00, 0x00, 0x00,
-        UNICHAR2('1'), UNICHAR2('2'), 0x00, 0x00, 0x00, 0x00,
+        UNICHAR1('1'), UNICHAR1('2'), 0x00, 0x00, 0x00, 0x00,
         /* "123" */
         0x03, 0x00, 0x00, 0x00,
-        UNICHAR2('1'), UNICHAR2('2'), UNICHAR2('3'), 0x00, 0x00,
+        UNICHAR1('1'), UNICHAR1('2'), UNICHAR1('3'), 0x00, 0x00,
         /* "1234" */
         0x04, 0x00,0x00, 0x00,
-        UNICHAR2('1'), UNICHAR2('2'), UNICHAR2('3'), UNICHAR2('4'),
+        UNICHAR1('1'), UNICHAR1('2'), UNICHAR1('3'), UNICHAR1('4'),
+        0x00, 0x00, 0x00, 0x00,
+        /* "test" in Russian */
+        0x04, 0x00,0x00, 0x00,
+        UNICHAR2(0x04,0x42), UNICHAR2(0x04,0x35),
+        UNICHAR2(0x04,0x41), UNICHAR2(0x04,0x42),
         0x00, 0x00, 0x00, 0x00
     };
 
@@ -285,6 +294,38 @@ test_broken(
 }
 
 /*==========================================================================*
+ * InvalidUtf8
+ *==========================================================================*/
+
+static
+void
+test_invalid_utf8(
+    void)
+{
+    GRilIoRequest* req = grilio_request_new();
+    GRilIoParser parser;
+    /* Valid UTF8 character followed by an invalid one */
+    const char* in = "\xD1\x82\x81";
+    char* out;
+
+    grilio_request_append_utf8(req, in);
+    GVERBOSE("Encoded %u bytes", grilio_request_size(req));
+
+    grilio_parser_init(&parser, grilio_request_data(req),
+        grilio_request_size(req));
+
+    /* Invalid tail is dropped by grilio_request_append_utf8 */
+    out = grilio_parser_get_utf8(&parser);
+    g_assert(out);
+    g_assert(strlen(out) == 2);
+    g_assert(!memcmp(in, out, strlen(out)));
+    g_free(out);
+
+    g_assert(grilio_parser_at_end(&parser));
+    grilio_request_unref(req);
+}
+
+/*==========================================================================*
  * Format
  *==========================================================================*/
 
@@ -333,6 +374,7 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "Strings", test_strings);
     g_test_add_func(TEST_PREFIX "Split", test_split);
     g_test_add_func(TEST_PREFIX "Broken", test_broken);
+    g_test_add_func(TEST_PREFIX "InvalidUtf8", test_invalid_utf8);
     g_test_add_func(TEST_PREFIX "Format", test_format);
     test_init(&test_opt, argc, argv);
     return g_test_run();
