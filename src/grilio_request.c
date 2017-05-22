@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -13,8 +13,8 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of the Jolla Ltd nor the names of its contributors
- *      may be used to endorse or promote products derived from this software
+ *   3. Neither the name of Jolla Ltd nor the names of its contributors may
+ *      be used to endorse or promote products derived from this software
  *      without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -217,8 +217,12 @@ grilio_request_append_utf8_chars(
 {
     if (G_LIKELY(req)) {
         const gsize old_size = req->bytes->len;
-        if (num_bytes < 0) {
-            num_bytes = utf8 ? strlen(utf8) : 0;
+        if (utf8) {
+            const char* end = utf8;
+            g_utf8_validate(utf8, num_bytes, &end);
+            num_bytes = end - utf8;
+        } else {
+            num_bytes = 0;
         }
         if (num_bytes > 0) {
             glong len = g_utf8_strlen(utf8, num_bytes);
