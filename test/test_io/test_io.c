@@ -329,6 +329,18 @@ typedef struct test_queue_data {
 
 static
 void
+test_queue_no_response(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    g_assert(FALSE);
+}
+
+static
+void
 test_queue_destroy_request(
     void* user_data)
 {
@@ -420,6 +432,7 @@ test_queue_start(
     void* user_data)
 {
     TestQueue* queue = user_data;
+    guint id;
 
     /* NULL resistance */
     g_assert(!grilio_queue_send_request_full(NULL, NULL, 0, NULL, NULL, NULL));
@@ -435,6 +448,13 @@ test_queue_start(
     grilio_queue_send_request_full(queue->queue[1], NULL,
         RIL_REQUEST_TEST, test_queue_response,
         test_queue_destroy_request, queue);
+
+    /* Expected failure to cancel a request that's not in a queue */
+    id = grilio_channel_send_request_full(queue->test.io, NULL,
+        RIL_REQUEST_TEST, test_queue_no_response, NULL, NULL);
+    g_assert(id);
+    g_assert(!grilio_queue_cancel_request(queue->queue[0], id, FALSE));
+    g_assert(grilio_channel_cancel_request(queue->test.io, id, FALSE));
 
     /* Cancel request without callback */
     grilio_queue_cancel_request(queue->queue[1],
