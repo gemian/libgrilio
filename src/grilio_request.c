@@ -35,6 +35,18 @@
 
 #include <gutil_macros.h>
 
+static
+gboolean
+grilio_request_default_retry(
+    GRilIoRequest* request,
+    int ril_status,
+    const void* response_data,
+    guint response_len,
+    void* user_data)
+{
+    return ril_status != RIL_E_SUCCESS;
+}
+
 GRilIoRequest*
 grilio_request_new()
 {
@@ -48,8 +60,9 @@ grilio_request_sized_new(
     GRilIoRequest* req = g_slice_new0(GRilIoRequest);
     g_atomic_int_set(&req->refcount, 1);
     req->timeout = GRILIO_TIMEOUT_DEFAULT;
-    req->bytes = g_byte_array_sized_new(GRILIO_REQUEST_HEADER_SIZE + size);
-    g_byte_array_set_size(req->bytes, GRILIO_REQUEST_HEADER_SIZE);
+    req->retry = grilio_request_default_retry;
+    req->bytes = g_byte_array_sized_new(RIL_REQUEST_HEADER_SIZE + size);
+    g_byte_array_set_size(req->bytes, RIL_REQUEST_HEADER_SIZE);
     return req;
 }
 
@@ -152,6 +165,16 @@ grilio_request_set_retry(
     if (G_LIKELY(req)) {
         req->retry_period = milliseconds;
         req->max_retries = max_retries;
+    }
+}
+
+void
+grilio_request_set_retry_func(
+    GRilIoRequest* req,
+    GRilIoRequestRetryFunc retry)
+{
+    if (G_LIKELY(req)) {
+        req->retry = retry ? retry : grilio_request_default_retry;
     }
 }
 
@@ -342,8 +365,8 @@ grilio_request_data(
     GRilIoRequest* req)
 {
     if (G_LIKELY(req)) {
-        GASSERT(req->bytes->len >= GRILIO_REQUEST_HEADER_SIZE);
-        return req->bytes->data + GRILIO_REQUEST_HEADER_SIZE;
+        GASSERT(req->bytes->len >= RIL_REQUEST_HEADER_SIZE);
+        return req->bytes->data + RIL_REQUEST_HEADER_SIZE;
     } else {
         return NULL;
     }
@@ -354,8 +377,8 @@ grilio_request_size(
     GRilIoRequest* req)
 {
     if (G_LIKELY(req)) {
-        GASSERT(req->bytes->len >= GRILIO_REQUEST_HEADER_SIZE);
-        return req->bytes->len - GRILIO_REQUEST_HEADER_SIZE;
+        GASSERT(req->bytes->len >= RIL_REQUEST_HEADER_SIZE);
+        return req->bytes->len - RIL_REQUEST_HEADER_SIZE;
     } else {
         return 0;
     }

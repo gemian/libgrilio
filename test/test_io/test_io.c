@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -46,8 +46,8 @@
 #define TEST_TIMEOUT (10) /* seconds */
 
 #define RIL_REQUEST_TEST 51
-#define RIL_UNSOL_RIL_CONNECTED 1034
 #define RIL_E_GENERIC_FAILURE 2
+#define RIL_E_REQUEST_NOT_SUPPORTED 6
 
 static TestOpt test_opt;
 
@@ -278,6 +278,7 @@ test_basic(
     /* Test NULL resistance */
     g_assert(!grilio_request_retry_count(NULL));
     grilio_request_set_retry(NULL, 0, 0);
+    grilio_request_set_retry_func(NULL, NULL);
     grilio_channel_set_timeout(NULL, 0);
     grilio_channel_cancel_all(NULL, FALSE);
     g_assert(!grilio_channel_ref(NULL));
@@ -299,6 +300,7 @@ test_basic(
 
     /* Submit repeatable request without the completion callback */
     grilio_request_set_retry(req, 0, 1);
+    grilio_request_set_retry_func(req, NULL);
     g_assert(test_basic_response_ok(test->server, "IGNORE",
         grilio_channel_send_request(test->io, req, RIL_REQUEST_TEST)));
 
@@ -816,6 +818,7 @@ typedef struct test_handlers_data {
     int count1;
     int count2;
     gulong next_event_id;
+    gulong total_event_id;
     gulong id1[TEST_HANDLERS_COUNT];
     gulong id2[TEST_HANDLERS_COUNT];
 } TestHandlers;
@@ -889,7 +892,6 @@ test_handlers_inc(
     void* user_data)
 {
     int* count = user_data;
-    g_assert(code == TEST_HANDLERS_INC_EVENT);
     (*count)++;
     GDEBUG("Event %u data %p value %d", code, count, *count);
 }
@@ -901,7 +903,7 @@ test_handlers(
 {
     TestHandlers* h = test_new(TestHandlers, "Handlers");
     Test* test = &h->test;
-    int i;
+    int i, total = 0;
 
     /* Prepare the test */
     for (i=0; i<TEST_HANDLERS_COUNT; i++) {
@@ -910,6 +912,8 @@ test_handlers(
         h->id2[i] = grilio_channel_add_unsol_event_handler(test->io,
             test_handlers_inc, TEST_HANDLERS_INC_EVENT, &h->count2);
     }
+    h->total_event_id = grilio_channel_add_unsol_event_handler(test->io,
+        test_handlers_inc, 0, &total);
     for (i=0; i<TEST_HANDLERS_INC_EVENTS_COUNT; i++) {
         test_handlers_submit_event(test, TEST_HANDLERS_INC_EVENT);
     }
@@ -923,6 +927,8 @@ test_handlers(
     /* Check the final state */
     g_assert(h->count1 == 2*TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT);
     g_assert(h->count2 == TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT);
+    /* Total count includes RIL_UNSOL_RIL_CONNECTED + REMOVE and DONE */
+    g_assert(total == TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT + 3);
     for (i=0; i<TEST_HANDLERS_COUNT; i++) {
         g_assert(!h->id2[i]);
     }
@@ -930,6 +936,7 @@ test_handlers(
     /* Clean up */
     grilio_channel_remove_handlers(test->io, h->id1, TEST_HANDLERS_COUNT);
     grilio_channel_remove_handlers(test->io, h->id2, TEST_HANDLERS_COUNT);
+    grilio_channel_remove_handler(test->io, h->total_event_id);
     grilio_channel_remove_handler(test->io, h->next_event_id);
     /* These do nothing: */
     grilio_channel_remove_handler(test->io, 0);
@@ -1046,7 +1053,7 @@ test_retry1_continue(
     /* This should result in req2 getting completed */
     GDEBUG("Continuing...");
     grilio_test_server_add_response(test->server, NULL,
-        retry->req2->req_id, RIL_E_GENERIC_FAILURE);
+        retry->req2->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
 }
 
 static
@@ -1064,6 +1071,18 @@ test_retry1_req1_timeout(
         test_basic_response_ok(test->server, "TEST",
             test_basic_request(test, test_retry1_continue));
     }
+}
+
+static
+gboolean
+test_retry1_req2_retry(
+    GRilIoRequest* request,
+    int ril_status,
+    const void* response_data,
+    guint response_len,
+    void* user_data)
+{
+    return ril_status == RIL_E_GENERIC_FAILURE;
 }
 
 static
@@ -1143,13 +1162,13 @@ test_retry1_start(
     grilio_test_server_add_response(test->server, NULL,
         retry->req2->req_id, RIL_E_GENERIC_FAILURE);
     grilio_test_server_add_response(test->server, NULL,
-        retry->req3->req_id, RIL_E_GENERIC_FAILURE);
+        retry->req3->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
     grilio_test_server_add_response(test->server, NULL,
-        retry->req4->req_id, RIL_E_GENERIC_FAILURE);
+        retry->req4->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
     grilio_test_server_add_response(test->server, NULL,
-        retry->req5->req_id, RIL_E_GENERIC_FAILURE);
+        retry->req5->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
     grilio_test_server_add_response(test->server, NULL,
-        retry->req6->req_id, RIL_E_GENERIC_FAILURE);
+        retry->req6->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
     /* And wait for req1 to timeout */
 }
 
@@ -1172,6 +1191,7 @@ test_retry1(
     grilio_request_set_retry(retry->req1, 10, 1);
     grilio_request_set_timeout(retry->req1, 10);
     grilio_request_set_retry(retry->req2, 0, 1);
+    grilio_request_set_retry_func(retry->req2, test_retry1_req2_retry);
     grilio_request_set_retry(retry->req3, 0, -1);
     grilio_request_set_retry(retry->req4, INT_MAX-1, -1);
     grilio_request_set_retry(retry->req5, INT_MAX, -1);
@@ -1197,7 +1217,7 @@ test_retry1(
 
     g_assert(grilio_request_status(retry->req4) == GRILIO_REQUEST_CANCELLED);
     g_assert(grilio_request_status(retry->req5) == GRILIO_REQUEST_CANCELLED);
-    g_assert(retry->req2_status == RIL_E_GENERIC_FAILURE);
+    g_assert(retry->req2_status == RIL_E_REQUEST_NOT_SUPPORTED);
     g_assert(retry->req3_completed == 1);
     g_assert(retry->req4_completed == 1);
     g_assert(grilio_request_retry_count(retry->req1) == 1);
@@ -1361,27 +1381,20 @@ test_retry3_req_completed(
 }
 
 static
-gboolean
+void
 test_retry3_check_req(
     GRilIoChannel* io,
     GRilIoRequest* req,
     guint dummy_id)
 {
     const guint id = grilio_request_id(req);
-    if (grilio_channel_retry_request(io, dummy_id)) {
-        GDEBUG("Retry with dummy id unexpectedly succeeded");
-    } else if (!grilio_channel_retry_request(io, id)) {
-        GDEBUG("Failed to retry");
-    } else if (grilio_channel_retry_request(io, id)) {
-        GDEBUG("Second retry unexpectedly succeeded");
-    } else if (grilio_channel_retry_request(io, dummy_id)) {
-        GDEBUG("Retry with dummy id unexpectedly succeeded");
-    } else if (!grilio_channel_cancel_request(io, id, TRUE)) {
-        GDEBUG("Failed to cancel");
-    } else {
-        return TRUE;
-    }
-    return FALSE;
+    g_assert(!grilio_channel_retry_request(NULL, dummy_id));
+    g_assert(!grilio_channel_retry_request(io, dummy_id));
+    g_assert(!grilio_channel_retry_request(io, 0));
+    g_assert(grilio_channel_retry_request(io, id));
+    g_assert(!grilio_channel_retry_request(io, id)); /* Must fail */
+    g_assert(!grilio_channel_retry_request(io, dummy_id));
+    g_assert(grilio_channel_cancel_request(io, id, TRUE));
 }
 
 static
@@ -1398,11 +1411,9 @@ test_retry3_retry_and_cancel(
     if (error) {
         GDEBUG("Unexpected completion status %d", error);
     } else {
-        if (test_retry3_check_req(io, retry->req1, retry->dummy_id) &&
-            test_retry3_check_req(io, retry->req2, retry->dummy_id)) {
-            /* All good, done with the test */
-            g_main_loop_quit(test->loop);
-        }
+        test_retry3_check_req(io, retry->req1, retry->dummy_id);
+        test_retry3_check_req(io, retry->req2, retry->dummy_id);
+        g_main_loop_quit(test->loop);
     }
 }
 

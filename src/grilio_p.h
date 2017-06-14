@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -13,8 +13,8 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of the Jolla Ltd nor the names of its contributors
- *      may be used to endorse or promote products derived from this software
+ *   3. Neither the name of Jolla Ltd nor the names of its contributors may
+ *      be used to endorse or promote products derived from this software
  *      without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -37,14 +37,14 @@
 #include "grilio_channel.h"
 #include "grilio_queue.h"
 
-#define RIL_UNSOL_RIL_CONNECTED 1034
-
 /* Byte order of the RIL payload (native?) */
 #define GUINT32_FROM_RIL(x) (x) /* GUINT32_FROM_LE(x) ? */
 #define GUINT32_TO_RIL(x)   (x) /* GUINT32_TO_LE(x) ? */
 
 /* RIL constants */
-#define GRILIO_REQUEST_HEADER_SIZE (12)
+#define RIL_REQUEST_HEADER_SIZE (12)
+#define RIL_RESPONSE_HEADER_SIZE (12)
+#define RIL_UNSOL_RIL_CONNECTED 1034
 #define RIL_E_SUCCESS (0)
 
 /*
@@ -69,6 +69,7 @@ struct grilio_request {
     GRilIoRequest* next;
     GRilIoRequest* qnext;
     GRilIoQueue* queue;
+    GRilIoRequestRetryFunc retry;
     GRilIoChannelResponseFunc response;
     GDestroyNotify destroy;
     void* user_data;
@@ -89,8 +90,7 @@ grilio_channel_get_request(
 
 G_INLINE_FUNC gboolean
 grilio_request_can_retry(GRilIoRequest* req)
-    { return G_LIKELY(req) && (req->max_retries < 0 ||
-                               req->max_retries > req->retry_count); }
+    { return req->max_retries < 0 || req->max_retries > req->retry_count; }
 
 #endif /* GRILIO_PRIVATE_H */
 

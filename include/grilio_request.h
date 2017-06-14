@@ -48,6 +48,28 @@ typedef enum grilio_request_status {
     GRILIO_REQUEST_RETRY
 } GRILIO_REQUEST_STATUS;
 
+/*
+ * GRilIoRequestRetryFunc
+
+ * If request retry is enabled with grilio_request_set_retry(), then this
+ * callback is invoiked to check whether the request should be retried,
+ * based on the status received from RIL. If it returns TRUE, the request
+ * is retried at some point in the future, otherwise it gets completed
+ * right away. The default callback returns (ril_status != RIL_E_SUCCESS).
+ *
+ * user_data is the pointer passed to grilio_xxx_send_request_full()
+ * when the request was submitted or NULL if it was submitted with with
+ * grilio_xxx_send_request().
+ */
+typedef
+gboolean
+(*GRilIoRequestRetryFunc)(
+    GRilIoRequest* request,
+    int ril_status,
+    const void* response_data,
+    guint response_len,
+    void* user_data);
+
 GRilIoRequest*
 grilio_request_new(void);
 
@@ -85,6 +107,11 @@ grilio_request_set_retry(
     GRilIoRequest* request,
     guint milliseconds,
     int max_retries);
+
+void
+grilio_request_set_retry_func(
+    GRilIoRequest* request,
+    GRilIoRequestRetryFunc retry);
 
 int
 grilio_request_retry_count(

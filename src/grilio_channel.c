@@ -303,45 +303,41 @@ grilio_channel_handle_eof(
 }
 
 static
-gboolean
+void
 grilio_channel_schedule_retry(
     GRilIoChannelPriv* priv,
     GRilIoRequest* req)
 {
     GASSERT(!req->next);
-    if (grilio_request_can_retry(req)) {
-        req->deadline = g_get_monotonic_time() + MICROSEC(req->retry_period);
-        req->status = GRILIO_REQUEST_RETRY;
+    req->deadline = g_get_monotonic_time() + MICROSEC(req->retry_period);
+    req->status = GRILIO_REQUEST_RETRY;
 
-        /* Remove the request from the request table while it's waiting
-         * for its turn to retry. It means that it gets completed during
-         * this time, we will miss the reply. */
-        grilio_request_ref(req);
-        g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->req_id));
-        if (req->id != req->req_id) {
-            g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->id));
-        }
-
-        GVERBOSE("Retry #%d for request %u in %u ms", req->retry_count+1,
-            req->id, req->retry_period);
-
-        /* Keep the retry queue sorted by deadline */
-        if (priv->retry_req && priv->retry_req->deadline < req->deadline) {
-            GRilIoRequest* prev = priv->retry_req;
-            GRilIoRequest* next = prev->next;
-            while (next && next->deadline < req->deadline) {
-                prev = next;
-                next = prev->next;
-            }
-            prev->next = req;
-            req->next = next;
-        } else {
-            req->next = priv->retry_req;
-            priv->retry_req = req;
-        }
-        return TRUE;
+    /* Remove the request from the request table while it's waiting
+     * for its turn to retry. It means that it gets completed during
+     * this time, we will miss the reply. */
+    grilio_request_ref(req);
+    g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->req_id));
+    if (req->id != req->req_id) {
+        g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->id));
     }
-    return FALSE;
+
+    GVERBOSE("Retry #%d for request %u in %u ms", req->retry_count+1,
+        req->id, req->retry_period);
+
+    /* Keep the retry queue sorted by deadline */
+    if (priv->retry_req && priv->retry_req->deadline < req->deadline) {
+        GRilIoRequest* prev = priv->retry_req;
+        GRilIoRequest* next = prev->next;
+        while (next && next->deadline < req->deadline) {
+            prev = next;
+            next = prev->next;
+        }
+        prev->next = req;
+        req->next = next;
+    } else {
+        req->next = priv->retry_req;
+        priv->retry_req = req;
+    }
 }
 
 static
@@ -380,7 +376,9 @@ grilio_channel_timeout(
         /* Completion callbacks may cancel some of the expired requests, so
          * we need to make sure that they are still there */
         if (g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->id))) {
-            if (!grilio_channel_schedule_retry(priv, req)) {
+            if (grilio_request_can_retry(req)) {
+                grilio_channel_schedule_retry(priv, req);
+            } else {
                 grilio_channel_drop_request(priv, req);
                 if (req->response) {
                     req->response(self, GRILIO_STATUS_TIMEOUT, NULL, 0,
@@ -690,7 +688,7 @@ grilio_channel_handle_packet(
             g_signal_emit(self, grilio_channel_signals[SIGNAL_UNSOL_EVENT],
                 detail, code, priv->read_buf + 8, priv->read_len - 8);
             return TRUE;
-        } else if (priv->read_len >= 12) {
+        } else if (priv->read_len >= RIL_RESPONSE_HEADER_SIZE) {
             /* RIL Solicited Response */
             const guint32 id = GUINT32_FROM_RIL(buf[1]);
             const guint32 status = GUINT32_FROM_RIL(buf[2]);
@@ -704,20 +702,23 @@ grilio_channel_handle_packet(
             /* Handle the case if we receive a response with the id of the
              * packet which we haven't sent yet. */
             if (req && req->status == GRILIO_REQUEST_SENT) {
+                const void* resp = priv->read_buf + RIL_RESPONSE_HEADER_SIZE;
+                const guint len = priv->read_len - RIL_RESPONSE_HEADER_SIZE;
+
                 GASSERT(req->req_id == id);
                 /* Temporary increment the ref count to compensate for
                  * g_hash_table_remove possibly unreferencing the request */
                 grilio_request_ref(req);
-                if (status != RIL_E_SUCCESS &&
-                    grilio_channel_schedule_retry(priv, req)) {
+                if (grilio_request_can_retry(req) &&
+                    req->retry(req, status, resp, len, req->user_data)) {
                     /* Will retry, keep it around */
+                    grilio_channel_schedule_retry(priv, req);
                     grilio_channel_reset_timeout(self);
                 } else {
                     grilio_channel_drop_request(priv, req);
                     req->status = GRILIO_REQUEST_DONE;
                     if (req->response) {
-                        req->response(self, status, priv->read_buf + 12,
-                            priv->read_len - 12, req->user_data);
+                        req->response(self, status, resp, len, req->user_data);
                     }
                 }
                 /* Release temporary reference */
