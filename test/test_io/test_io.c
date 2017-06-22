@@ -281,6 +281,8 @@ test_basic(
     grilio_request_set_retry_func(NULL, NULL);
     grilio_channel_set_timeout(NULL, 0);
     grilio_channel_cancel_all(NULL, FALSE);
+    grilio_channel_deserialize(NULL, 0);
+    g_assert(!grilio_channel_serialize(NULL));
     g_assert(!grilio_channel_ref(NULL));
     g_assert(!grilio_channel_add_connected_handler(NULL, NULL, NULL));
     g_assert(!grilio_channel_add_connected_handler(test->io, NULL, NULL));
@@ -1480,23 +1482,23 @@ test_retry3(
 }
 
 /*==========================================================================*
- * Timeout
+ * Timeout1
  *==========================================================================*/
 
-typedef struct test_timeout_data {
+typedef struct test_timeout1_data {
     Test test;
     int timeout_count;
     guint req_id;
     guint timer_id;
-} TestTimeout;
+} TestTimeout1;
 
 static
 gboolean
-test_timeout_done(
+test_timeout1_done(
     gpointer user_data)
 {
     Test* test = user_data;
-    TestTimeout* timeout = G_CAST(test, TestTimeout, test);
+    TestTimeout1* timeout = G_CAST(test, TestTimeout1, test);
     timeout->timer_id = 0;
     GDEBUG("Cancelling request %u", timeout->req_id);
     if (grilio_channel_cancel_request(test->io, timeout->req_id, TRUE) &&
@@ -1508,7 +1510,7 @@ test_timeout_done(
 
 static
 void
-test_timeout_response(
+test_timeout1_response(
     GRilIoChannel* io,
     int status,
     const void* data,
@@ -1516,23 +1518,23 @@ test_timeout_response(
     void* user_data)
 {
     Test* test = user_data;
-    TestTimeout* timeout = G_CAST(test, TestTimeout, test);
+    TestTimeout1* timeout = G_CAST(test, TestTimeout1, test);
     GDEBUG("Completion status %d", status);
     if (status == GRILIO_STATUS_TIMEOUT) {
         timeout->timeout_count++;
         if (!timeout->timer_id) {
-            timeout->timer_id = g_timeout_add(200, test_timeout_done, test);
+            timeout->timer_id = g_timeout_add(200, test_timeout1_done, test);
         }
     }
 }
 
 static
 void
-test_timeout_submit_requests(
+test_timeout1_submit_requests(
     Test* test,
     GRilIoChannelResponseFunc fn)
 {
-    TestTimeout* timeout = G_CAST(test, TestTimeout, test);
+    TestTimeout1* timeout = G_CAST(test, TestTimeout1, test);
     GRilIoRequest* req1 = grilio_request_new();
     GRilIoRequest* req2 = grilio_request_new();
     grilio_channel_set_timeout(test->io, 10);
@@ -1541,14 +1543,14 @@ test_timeout_submit_requests(
     grilio_channel_send_request_full(test->io, req1,
         RIL_REQUEST_TEST, fn, NULL, test);
     timeout->req_id = grilio_channel_send_request_full(test->io, req2,
-        RIL_REQUEST_TEST, test_timeout_response, NULL, test);
+        RIL_REQUEST_TEST, test_timeout1_response, NULL, test);
     grilio_request_unref(req1);
     grilio_request_unref(req2);
 }
 
 static
 void
-test_timeout_start(
+test_timeout1_start(
     GRilIoChannel* io,
     int status,
     const void* data,
@@ -1556,24 +1558,500 @@ test_timeout_start(
     void* user_data)
 {
     Test* test = user_data;
-    TestTimeout* timeout = G_CAST(test, TestTimeout, test);
+    TestTimeout1* timeout = G_CAST(test, TestTimeout1, test);
     if (status == GRILIO_STATUS_TIMEOUT) {
         GDEBUG("Starting...");
         if (grilio_channel_cancel_request(test->io, timeout->req_id, FALSE)) {
-            test_timeout_submit_requests(test, test_timeout_response);
+            test_timeout1_submit_requests(test, test_timeout1_response);
         }
     }
 }
 
 static
 void
-test_timeout(
+test_timeout1(
     void)
 {
-    TestTimeout* timeout = test_new(TestTimeout, "Timeout");
+    TestTimeout1* timeout = test_new(TestTimeout1, "Timeout1");
     Test* test = &timeout->test;
-    test_timeout_submit_requests(test, test_timeout_start);
+    test_timeout1_submit_requests(test, test_timeout1_start);
     g_assert(!timeout->timer_id);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Timeout2
+ *==========================================================================*/
+
+typedef struct test_timeout2_data {
+    Test test;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+} TestTimeout2;
+
+static
+void
+test_timeout2_req2_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    GDEBUG("Request 2 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_TIMEOUT);
+    g_main_loop_quit(test->loop);
+}
+
+static
+void
+test_timeout2_start(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestTimeout2* ts = G_CAST(test, TestTimeout2, test);
+    GDEBUG("Starting...");
+    grilio_channel_send_request(test->io, ts->req1, RIL_REQUEST_TEST);
+    grilio_channel_send_request_full(test->io, ts->req2,
+        RIL_REQUEST_TEST, test_timeout2_req2_completed, NULL, test);
+}
+
+static
+void
+test_timeout2(
+    void)
+{
+    TestTimeout2* t = test_new(TestTimeout2, "Timeout2");
+    Test* test = &t->test;
+    guint serial_id;
+
+    /* Prepare the test */
+    t->req1 = grilio_request_new();
+    t->req2 = grilio_request_new();
+    grilio_channel_set_timeout(test->io, 10);
+    grilio_request_set_timeout(t->req2, 20);
+
+    /* Start after we have been connected */
+    g_assert(!test->io->connected);
+    serial_id = grilio_channel_serialize(test->io);
+    g_assert(serial_id);
+    grilio_channel_add_connected_handler(test->io, test_timeout2_start, test);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    /* Check the final state */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_DONE);
+    grilio_channel_deserialize(test->io, serial_id);
+    grilio_request_unref(t->req1);
+    grilio_request_unref(t->req2);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Serialize1
+ *==========================================================================*/
+
+typedef struct test_serialize1_data {
+    Test test;
+    guint serial_id;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+    GRilIoRequest* req3;
+    GRilIoRequest* req4;
+    GRilIoRequest* req5;
+} TestSerialize1;
+
+static
+void
+test_serialize1_req1_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestSerialize1* t = G_CAST(test, TestSerialize1, test);
+    GDEBUG("Request 1 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_OK);
+    /* Request has completed, retry fails */
+    g_assert(!grilio_channel_retry_request(test->io,
+        grilio_request_id(t->req1)));
+    /* Request 2 should now be pending, so retry says TRUE */
+    g_assert(grilio_channel_retry_request(test->io,
+        grilio_request_id(t->req2)));
+    /* The second request is sent before this callback is invoked,
+     * cancel the third one */
+    g_assert(grilio_channel_cancel_request(test->io,
+        grilio_request_id(t->req3), FALSE));
+    /* This one gets ignored: */
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(t->req3), GRILIO_STATUS_OK);
+}
+
+static
+void
+test_serialize1_req2_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestSerialize1* t = G_CAST(test, TestSerialize1, test);
+    GDEBUG("Request 2 completion status %d", status);
+    g_assert(status == RIL_E_GENERIC_FAILURE);
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(t->req4), RIL_E_REQUEST_NOT_SUPPORTED);
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(t->req5), GRILIO_STATUS_OK);
+    /* De-serialize the channel */
+    grilio_channel_deserialize(test->io, t->serial_id);
+}
+
+static
+void
+test_serialize1_req3_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    GDEBUG("Request 3 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_CANCELLED);
+}
+
+static
+void
+test_serialize1_req4_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    GDEBUG("Request 4 completion status %d", status);
+    g_assert(status == RIL_E_REQUEST_NOT_SUPPORTED);
+}
+
+static
+void
+test_serialize1_req5_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    GDEBUG("Request 5 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_OK);
+    g_main_loop_quit(test->loop);
+}
+
+static
+void
+test_serialize1_start(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestSerialize1* t = G_CAST(test, TestSerialize1, test);
+    GDEBUG("Starting...");
+    grilio_channel_send_request_full(test->io, t->req2,
+        RIL_REQUEST_TEST, test_serialize1_req2_completed, NULL, test);
+    grilio_channel_send_request_full(test->io, t->req3,
+        RIL_REQUEST_TEST, test_serialize1_req3_completed, NULL, test);
+    grilio_channel_send_request_full(test->io, t->req4,
+        RIL_REQUEST_TEST, test_serialize1_req4_completed, NULL, test);
+    grilio_channel_send_request_full(test->io, t->req5,
+        RIL_REQUEST_TEST, test_serialize1_req5_completed, NULL, test);
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(t->req1), GRILIO_STATUS_OK);
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(t->req2), RIL_E_GENERIC_FAILURE);
+}
+
+static
+void
+test_serialize1(
+    void)
+{
+    TestSerialize1* t = test_new(TestSerialize1, "Serialize1");
+    Test* test = &t->test;
+    guint id;
+
+    /* Prepare the test */
+    t->req1 = grilio_request_new();
+    t->req2 = grilio_request_new();
+    t->req3 = grilio_request_new();
+    t->req4 = grilio_request_new();
+    t->req5 = grilio_request_new();
+    grilio_channel_set_timeout(test->io, GRILIO_TIMEOUT_DEFAULT);
+    grilio_request_set_timeout(t->req1, INT_MAX);
+
+    /* Start after we have been connected */
+    g_assert(!test->io->connected);
+    t->serial_id = grilio_channel_serialize(test->io);
+    g_assert(t->serial_id);
+    /* Increment/decrement serialization count */
+    grilio_channel_deserialize(test->io, grilio_channel_serialize(test->io));
+    /* Submit the first request. There's nothing to retry, just make sure
+     * that grilio_channel_retry_request returns TRUE. */
+    id = grilio_channel_send_request_full(test->io, t->req1, RIL_REQUEST_TEST,
+        test_serialize1_req1_completed, NULL, test);
+    g_assert(grilio_channel_retry_request(test->io, id));
+    /* And wait for the channel to get connected */
+    grilio_channel_add_connected_handler(test->io,
+        test_serialize1_start, test);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    /* Check the final state */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req4) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req5) == GRILIO_REQUEST_DONE);
+    grilio_request_unref(t->req1);
+    grilio_request_unref(t->req2);
+    grilio_request_unref(t->req3);
+    grilio_request_unref(t->req4);
+    grilio_request_unref(t->req5);
+    grilio_channel_deserialize(test->io, t->serial_id); // No effect
+    grilio_channel_deserialize(test->io, 0); // No effect
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Serialize2
+ *==========================================================================*/
+
+typedef struct test_serialize2_data {
+    Test test;
+    guint serial_id;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+    GRilIoRequest* req3;
+} TestSerialize2;
+
+static
+gboolean
+test_serialize2_response3(
+    void* user_data)
+{
+    Test* test = user_data;
+    TestSerialize2* t = G_CAST(test, TestSerialize2, test);
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(t->req3), RIL_E_GENERIC_FAILURE);
+    /* De-serialize the channel */
+    grilio_channel_deserialize(test->io, t->serial_id);
+    return G_SOURCE_REMOVE;
+}
+
+static
+void
+test_serialize2_req1_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestSerialize2* t = G_CAST(test, TestSerialize2, test);
+    GDEBUG("Request 1 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_OK);
+    /* Request 2 should is now pending, cancel it */
+    g_assert(grilio_channel_cancel_request(test->io,
+        grilio_request_id(t->req2), TRUE));
+    /* Submit response 3 but later */
+    g_idle_add(test_serialize2_response3, test);
+}
+
+static
+void
+test_serialize2_req3_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    GDEBUG("Request 3 completion status %d", status);
+    g_assert(status == RIL_E_GENERIC_FAILURE);
+    g_main_loop_quit(test->loop);
+}
+
+static
+void
+test_serialize2_start(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestSerialize2* t = G_CAST(test, TestSerialize2, test);
+    GDEBUG("Starting...");
+    grilio_channel_send_request(test->io, t->req2, RIL_REQUEST_TEST);
+    grilio_channel_send_request_full(test->io, t->req3,
+        RIL_REQUEST_TEST, test_serialize2_req3_completed, NULL, test);
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(t->req1), GRILIO_STATUS_OK);
+}
+
+static
+void
+test_serialize2(
+    void)
+{
+    TestSerialize2* t = test_new(TestSerialize2, "Serialize2");
+    Test* test = &t->test;
+    guint id;
+
+    /* Prepare the test */
+    t->req1 = grilio_request_new();
+    t->req2 = grilio_request_new();
+    t->req3 = grilio_request_new();
+
+    /* Start after we have been connected */
+    g_assert(!test->io->connected);
+    t->serial_id = grilio_channel_serialize(test->io);
+    g_assert(t->serial_id);
+    /* Submit the first request. There's nothing to retry, just make sure
+     * that grilio_channel_retry_request returns TRUE. */
+    id = grilio_channel_send_request_full(test->io, t->req1, RIL_REQUEST_TEST,
+        test_serialize2_req1_completed, NULL, test);
+    g_assert(grilio_channel_retry_request(test->io, id));
+    /* And wait for the channel to get connected */
+    grilio_channel_add_connected_handler(test->io,
+        test_serialize2_start, test);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    /* Check the final state */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_DONE);
+    grilio_request_unref(t->req1);
+    grilio_request_unref(t->req2);
+    grilio_request_unref(t->req3);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Serialize3
+ *==========================================================================*/
+
+typedef struct test_serialize3_data {
+    Test test;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+    GRilIoRequest* req3;
+} TestSerialize3;
+
+static
+void
+test_serialize3_req1_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestSerialize3* t = G_CAST(test, TestSerialize3, test);
+    GDEBUG("Request 1 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_OK);
+    g_assert(!grilio_channel_get_request(test->io,
+        grilio_request_id(t->req1)));
+    g_assert(grilio_channel_get_request(test->io,
+        grilio_request_id(t->req2)) == t->req2);
+    grilio_channel_cancel_all(test->io, TRUE);
+}
+
+static
+void
+test_serialize3_req3_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    GDEBUG("Request 3 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_CANCELLED);
+    g_main_loop_quit(test->loop);
+}
+
+static
+void
+test_serialize3_start(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestSerialize3* t = G_CAST(test, TestSerialize3, test);
+    GDEBUG("Starting...");
+
+    grilio_channel_send_request(test->io, t->req2, RIL_REQUEST_TEST);
+    grilio_channel_send_request_full(test->io, t->req3,
+        RIL_REQUEST_TEST, test_serialize3_req3_completed, NULL, test);
+    grilio_test_server_add_response(test->server, NULL,
+        grilio_request_id(t->req1), GRILIO_STATUS_OK);
+
+    g_assert(grilio_channel_get_request(test->io,
+        grilio_request_id(t->req1)) == t->req1);
+    g_assert(grilio_channel_get_request(test->io,
+        grilio_request_id(t->req2)) == t->req2);
+    g_assert(grilio_channel_get_request(test->io,
+        grilio_request_id(t->req3)) == t->req3);
+}
+
+static
+void
+test_serialize3(
+    void)
+{
+    TestSerialize3* t = test_new(TestSerialize3, "Serialize3");
+    Test* test = &t->test;
+    guint serial_id;
+
+    /* Prepare the test */
+    t->req1 = grilio_request_new();
+    t->req2 = grilio_request_new();
+    t->req3 = grilio_request_new();
+
+    /* Start after we have been connected */
+    g_assert(!test->io->connected);
+    serial_id = grilio_channel_serialize(test->io);
+    g_assert(serial_id);
+    grilio_channel_send_request_full(test->io, t->req1, RIL_REQUEST_TEST,
+        test_serialize3_req1_completed, NULL, test);
+    /* And Wait for the channel to get connected */
+    grilio_channel_add_connected_handler(test->io,
+        test_serialize3_start, test);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    /* Check the final state */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_CANCELLED);
+    grilio_request_unref(t->req1);
+    grilio_request_unref(t->req2);
+    grilio_request_unref(t->req3);
+    grilio_channel_deserialize(test->io, serial_id);
     test_free(test);
 }
 
@@ -1603,7 +2081,11 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "Retry1", test_retry1);
     g_test_add_func(TEST_PREFIX "Retry2", test_retry2);
     g_test_add_func(TEST_PREFIX "Retry3", test_retry3);
-    g_test_add_func(TEST_PREFIX "Timeout", test_timeout);
+    g_test_add_func(TEST_PREFIX "Timeout1", test_timeout1);
+    g_test_add_func(TEST_PREFIX "Timeout2", test_timeout2);
+    g_test_add_func(TEST_PREFIX "Serialize1", test_serialize1);
+    g_test_add_func(TEST_PREFIX "Serialize2", test_serialize2);
+    g_test_add_func(TEST_PREFIX "Serialize3", test_serialize3);
     signal(SIGPIPE, SIG_IGN);
     test_init(&test_opt, argc, argv);
     return g_test_run();
