@@ -147,6 +147,16 @@ grilio_request_unref(
 }
 
 void
+grilio_request_set_blocking(
+    GRilIoRequest* req,
+    gboolean blocking)
+{
+    if (G_LIKELY(req)) {
+        req->blocking = blocking;
+    }
+}
+
+void
 grilio_request_set_timeout(
     GRilIoRequest* req,
     int milliseconds)

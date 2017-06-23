@@ -67,6 +67,7 @@ struct grilio_request {
     int max_retries;
     int retry_count;
     guint retry_period;
+    gboolean blocking;
     GByteArray* bytes;
     GRilIoRequest* next;
     GRilIoRequest* qnext;

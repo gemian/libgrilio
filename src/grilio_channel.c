@@ -595,7 +595,7 @@ grilio_channel_write(
         req_timeout = priv->timeout;
     }
 
-    if (grilio_channel_serialized(priv)) {
+    if (grilio_channel_serialized(priv) || req->blocking) {
         /* Block next requests from being sent while this one is pending */
         priv->block_req = grilio_request_ref(req);
         if (req_timeout <= 0) {
@@ -1127,7 +1127,7 @@ grilio_channel_deserialize(
             g_hash_table_remove(priv->block_ids, GINT_TO_POINTER(id));
             if (!grilio_channel_serialized(priv)) {
                 GDEBUG("Deserializing %s", self->name);
-                if (priv->block_req) {
+                if (priv->block_req && !priv->block_req->blocking) {
                     grilio_request_unref(priv->block_req);
                     priv->block_req = NULL;
                 }
