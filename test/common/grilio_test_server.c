@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -13,8 +13,8 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of the Jolla Ltd nor the names of its contributors
- *      may be used to endorse or promote products derived from this software
+ *   3. Neither the name of Jolla Ltd nor the names of its contributors may
+ *      be used to endorse or promote products derived from this software
  *      without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -54,7 +54,14 @@ struct grilio_test_server {
     int write_chunk;
     int write_pos;
     GByteArray* write_data;
+    GSList* handlers;
+    GHashTable* code_handlers;
 };
+
+typedef struct grilio_test_server_handler {
+    GRilIoTestRequestFunc fn;
+    void* user_data;
+} GRilIoTestRequestHandler;
 
 static const guchar UNSOL_RIL_CONNECTED[] = {
     0x00, 0x00, 0x00, 0x10,
@@ -120,6 +127,22 @@ grilio_test_server_write(
 }
 
 static
+void
+grilio_test_server_call_handlers(
+    GSList* list,
+    guint code,
+    guint id,
+    const void* data,
+    guint len)
+{
+    while (list) {
+        GRilIoTestRequestHandler* handler = list->data;
+        handler->fn(code, id, data, len, handler->user_data);
+        list = list->next;
+    }
+}
+
+static
 gboolean
 grilio_test_server_read(
     GRilIoTestServer* server)
@@ -156,6 +179,27 @@ grilio_test_server_read(
     if (bytes_read) {
         GVERBOSE("Received %lu bytes", (unsigned long)bytes_read);
         g_byte_array_append(server->read_buf, (void*)server->buf, bytes_read);
+        if (server->read_buf->len > 4) {
+            const guint32* header = (guint32*)server->read_buf->data;
+            const guint32 len = GUINT32_FROM_BE(header[0]);
+            GASSERT(len >= 8);
+            if (server->read_buf->len >= len + 4) {
+                const guint32 code = GUINT32_FROM_RIL(header[1]);
+                const guint32 id = GUINT32_FROM_RIL(header[2]);
+                const guint32 data_len = len - 8;
+                const void* data = server->read_buf->data +
+                    RIL_REQUEST_HEADER_SIZE;
+                GDEBUG("Request %u, id=%u, len=%u", code, id, data_len);
+                grilio_test_server_call_handlers(server->handlers, code, id,
+                    data, data_len);
+                if (server->code_handlers) {
+                    grilio_test_server_call_handlers(g_hash_table_lookup(
+                        server->code_handlers, GINT_TO_POINTER(code)), code,
+                        id, data, data_len);
+                }
+                g_byte_array_remove_range(server->read_buf, 0, len + 4);
+            }
+        }
     }
     return TRUE;
 }
@@ -210,6 +254,8 @@ grilio_test_server_free(
 {
     if (server->write_watch_id) g_source_remove(server->write_watch_id);
     if (server->read_watch_id) g_source_remove(server->read_watch_id);
+    if (server->code_handlers) g_hash_table_destroy(server->code_handlers);
+    g_slist_free_full(server->handlers, g_free);
     g_byte_array_unref(server->write_data);
     g_byte_array_unref(server->read_buf);
     g_io_channel_unref(server->io_channel);
@@ -244,13 +290,6 @@ grilio_test_server_shutdown(
     }
 }
 
-GByteArray*
-grilio_test_server_read_buf(
-    GRilIoTestServer* server)
-{
-    return server->read_buf;
-}
-
 void
 grilio_test_server_add_data(
     GRilIoTestServer* server,
@@ -264,24 +303,70 @@ grilio_test_server_add_data(
 }
 
 void
-grilio_test_server_add_response(
+grilio_test_server_add_response_data(
     GRilIoTestServer* server,
-    GRilIoRequest* req,
     guint id,
-    guint status)
+    guint status,
+    const void* data,
+    guint len)
 {
     guint32* header;
     guint oldlen = server->write_data->len;
-    guint datalen = grilio_request_size(req);
     g_byte_array_set_size(server->write_data, oldlen + 16);
     header = (guint32*)(server->write_data->data + oldlen);
-    header[0] = GUINT32_TO_BE(datalen + 12);
+    header[0] = GUINT32_TO_BE(len + RIL_RESPONSE_HEADER_SIZE);
     header[1] = 0;  /* Solicited Response */
     header[2] = GUINT32_TO_RIL(id);
     header[3] = GUINT32_TO_RIL(status);
-    g_byte_array_append(server->write_data, grilio_request_data(req), datalen);
+    if (len) g_byte_array_append(server->write_data, data, len);
     if (grilio_test_server_ready_to_write(server)) {
         grilio_test_server_start_writing(server);
+    }
+}
+
+void
+grilio_test_server_add_response(
+    GRilIoTestServer* server,
+    GRilIoRequest* resp,
+    guint id,
+    guint status)
+{
+    grilio_test_server_add_response_data(server, id, status,
+        grilio_request_data(resp), grilio_request_size(resp));
+}
+
+static
+void
+grilio_test_server_free_handlers(
+    gpointer data)
+{
+    g_slist_free_full(data, g_free);
+}
+
+void
+grilio_test_server_add_request_func(
+    GRilIoTestServer* server,
+    guint code,
+    GRilIoTestRequestFunc fn,
+    void* user_data)
+{
+    GRilIoTestRequestHandler* handler = g_new(GRilIoTestRequestHandler, 1);
+    handler->fn = fn;
+    handler->user_data = user_data;
+    if (code) {
+        GSList* handlers = NULL;
+        gpointer key = GINT_TO_POINTER(code);
+        if (server->code_handlers) {
+            handlers = g_hash_table_lookup(server->code_handlers, key);
+        } else {
+            handlers = NULL;
+            server->code_handlers = g_hash_table_new_full(g_direct_hash,
+                g_direct_equal, NULL, grilio_test_server_free_handlers);
+        }
+        g_hash_table_insert(server->code_handlers, key,
+            g_slist_append(handlers, handler));
+    } else {
+        server->handlers = g_slist_append(server->handlers, handler);
     }
 }
 

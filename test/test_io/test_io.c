@@ -45,7 +45,11 @@
 
 #define TEST_TIMEOUT (10) /* seconds */
 
-#define RIL_REQUEST_TEST 51
+#define RIL_REQUEST_TEST_1 (1)
+#define RIL_REQUEST_TEST_2 (2)
+#define RIL_REQUEST_TEST_3 (3)
+#define RIL_REQUEST_TEST RIL_REQUEST_TEST_1
+
 #define RIL_E_GENERIC_FAILURE 2
 #define RIL_E_REQUEST_NOT_SUPPORTED 6
 
@@ -389,11 +393,10 @@ test_queue_last_response(
 
     /* 4 events should be cancelled, first one succeed,
      * this one doesn't count */
-    if (queue->cancel_count == 4 &&
-        queue->success_count == 1 &&
-        queue->destroy_count == 1) {
-        g_main_loop_quit(queue->test.loop);
-    }
+    g_assert(queue->cancel_count == 4);
+    g_assert(queue->success_count == 1);
+    g_assert(queue->destroy_count == 1);
+    g_main_loop_quit(queue->test.loop);
 }
 
 static
@@ -523,6 +526,132 @@ test_queue(
     grilio_queue_unref(queue->queue[1]);
     g_assert(!queue->queue[2]); /* This one should already be NULL */
     grilio_queue_unref(queue->queue[2]);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Transaction
+ *==========================================================================*/
+
+typedef struct test_transaction_data {
+    Test test;
+    GRilIoQueue* queue[3];
+    guint32 count;
+} TestTransaction;
+
+static
+void
+test_transaction_last_response(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestTransaction* t = user_data;
+    GDEBUG("Last response status %d", status);
+    g_assert(status == GRILIO_STATUS_OK);
+
+    /* All other response must have arrived by now */
+    g_assert(t->count == G_N_ELEMENTS(t->queue));
+    g_main_loop_quit(t->test.loop);
+}
+
+static
+void
+test_transaction_handle_response(
+    GRilIoChannel* channel,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestTransaction* t = user_data;
+    GRilIoParser parser;
+    guint32 i;
+    grilio_parser_init(&parser, data, len);
+    g_assert(grilio_parser_get_uint32(&parser, &i));
+    g_assert(grilio_parser_at_end(&parser));
+    g_assert(t->count == i);
+    t->count++;
+    GDEBUG("Response %u received", i);
+    /* Start the next transaction */
+    g_assert(grilio_queue_transaction_state(t->queue[i]) ==
+        GRILIO_TRANSACTION_STARTED);
+    grilio_queue_transaction_finish(t->queue[i]);
+}
+
+static
+void
+test_transaction_response(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* server)
+{
+    grilio_test_server_add_response_data(server, id, GRILIO_STATUS_OK,
+        data, len);
+}
+
+static
+void
+test_transaction(
+    void)
+{
+    TestTransaction* t = test_new(TestTransaction, "Transaction");
+    Test* test = &t->test;
+    int i;
+
+    for (i=0; i<G_N_ELEMENTS(t->queue); i++) {
+        GRILIO_TRANSACTION_STATE state;
+        t->queue[i] = grilio_queue_new(test->io);
+        g_assert(grilio_queue_transaction_state(t->queue[i]) ==
+            GRILIO_TRANSACTION_NONE);
+        state = grilio_queue_transaction_start(t->queue[i]);
+        if (i == 0) {
+            g_assert(state == GRILIO_TRANSACTION_STARTED);
+        } else {
+            g_assert(state == GRILIO_TRANSACTION_QUEUED);
+        } 
+        /* Second time makes no difference, the state doesn't change */
+        g_assert(grilio_queue_transaction_start(t->queue[i]) == state);
+        g_assert(grilio_queue_transaction_state(t->queue[i]) == state);
+    }
+
+    /* This one should be processed last */
+    grilio_channel_send_request_full(test->io, NULL, RIL_REQUEST_TEST,
+        test_transaction_last_response, NULL, t);
+
+    /* test_transaction_response will send the same data back */
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST,
+        test_transaction_response, test->server);
+
+    /* Submit requests in the opposite order */
+    for (i=G_N_ELEMENTS(t->queue)-1; i>=0; i--) {
+        GRilIoRequest* req = grilio_request_new();
+        grilio_request_append_int32(req, i);
+        grilio_queue_send_request_full(t->queue[i], req, RIL_REQUEST_TEST,
+            test_transaction_handle_response, NULL, t);
+        grilio_request_unref(req);
+    }
+
+    /* Test NULL resistance */
+    g_assert(grilio_channel_transaction_start(test->io, NULL) ==
+        GRILIO_TRANSACTION_NONE);
+    g_assert(grilio_channel_transaction_state(test->io, NULL) ==
+        GRILIO_TRANSACTION_NONE);
+    grilio_channel_transaction_finish(test->io, NULL);
+    g_assert(grilio_queue_transaction_start(NULL) == GRILIO_TRANSACTION_NONE);
+    g_assert(grilio_queue_transaction_state(NULL) == GRILIO_TRANSACTION_NONE);
+    grilio_queue_transaction_finish(NULL);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    for (i=0; i<G_N_ELEMENTS(t->queue); i++) {
+        grilio_queue_unref(t->queue[i]);
+    }
     test_free(test);
 }
 
@@ -2070,6 +2199,7 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "Connected", test_connected);
     g_test_add_func(TEST_PREFIX "Basic", test_basic);
     g_test_add_func(TEST_PREFIX "Queue", test_queue);
+    g_test_add_func(TEST_PREFIX "Transaction", test_transaction);
     g_test_add_func(TEST_PREFIX "WriteError1", test_write_error1);
     g_test_add_func(TEST_PREFIX "WriteError2", test_write_error2);
     g_test_add_func(TEST_PREFIX "WriteError3", test_write_error3);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -13,8 +13,8 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of the Jolla Ltd nor the names of its contributors
- *      may be used to endorse or promote products derived from this software
+ *   3. Neither the name of Jolla Ltd nor the names of its contributors may
+ *      be used to endorse or promote products derived from this software
  *      without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -38,6 +38,15 @@
 typedef struct grilio_test_server GRilIoTestServer;
 
 #define GRILIO_RIL_VERSION 7
+
+typedef
+void
+(*GRilIoTestRequestFunc)(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data);
 
 GRilIoTestServer*
 grilio_test_server_new();
@@ -72,9 +81,20 @@ grilio_test_server_add_response(
     guint id,
     guint status);
 
-GByteArray*
-grilio_test_server_received_data(
-    GRilIoTestServer* server);
+void
+grilio_test_server_add_response_data(
+    GRilIoTestServer* server,
+    guint id,
+    guint status,
+    const void* data,
+    guint len);
+
+void
+grilio_test_server_add_request_func(
+    GRilIoTestServer* server,
+    guint code,
+    GRilIoTestRequestFunc fn,
+    void* user_data);
 
 #endif /* GRILIO_TEST_SERVER_H */
 

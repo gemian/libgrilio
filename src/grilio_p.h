@@ -90,6 +90,21 @@ grilio_channel_get_request(
     GRilIoChannel* channel,
     guint id);
 
+GRILIO_TRANSACTION_STATE
+grilio_channel_transaction_start(
+    GRilIoChannel* channel,
+    GRilIoQueue* queue);
+
+GRILIO_TRANSACTION_STATE
+grilio_channel_transaction_state(
+    GRilIoChannel* channel,
+    GRilIoQueue* queue);
+
+void
+grilio_channel_transaction_finish(
+    GRilIoChannel* channel,
+    GRilIoQueue* queue);
+
 G_INLINE_FUNC gboolean
 grilio_request_can_retry(GRilIoRequest* req)
     { return req->max_retries < 0 || req->max_retries > req->retry_count; }

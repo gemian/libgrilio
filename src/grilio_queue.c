@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -13,8 +13,8 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of the Jolla Ltd nor the names of its contributors
- *      may be used to endorse or promote products derived from this software
+ *   3. Neither the name of Jolla Ltd nor the names of its contributors may
+ *      be used to endorse or promote products derived from this software
  *      without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -58,39 +58,40 @@ grilio_queue_new(
 static
 void
 grilio_queue_free(
-    GRilIoQueue* queue)
+    GRilIoQueue* self)
 {
     /* Remove active requests from the queue */
-    GRilIoRequest* req = queue->first_req;
+    GRilIoRequest* req = self->first_req;
     while (req) {
         GRilIoRequest* next = req->qnext;
         req->qnext = NULL;
         req->queue = NULL;
         req = next;
     }
-    grilio_channel_unref(queue->channel);
-    g_slice_free(GRilIoQueue, queue);
+    grilio_channel_transaction_finish(self->channel, self);
+    grilio_channel_unref(self->channel);
+    g_slice_free(GRilIoQueue, self);
 }
 
 GRilIoQueue*
 grilio_queue_ref(
-    GRilIoQueue* queue)
+    GRilIoQueue* self)
 {
-    if (G_LIKELY(queue)) {
-        GASSERT(queue->refcount > 0);
-        g_atomic_int_inc(&queue->refcount);
+    if (G_LIKELY(self)) {
+        GASSERT(self->refcount > 0);
+        g_atomic_int_inc(&self->refcount);
     }
-    return queue;
+    return self;
 }
 
 void
 grilio_queue_unref(
-    GRilIoQueue* queue)
+    GRilIoQueue* self)
 {
-    if (G_LIKELY(queue)) {
-        GASSERT(queue->refcount > 0);
-        if (g_atomic_int_dec_and_test(&queue->refcount)) {
-            grilio_queue_free(queue);
+    if (G_LIKELY(self)) {
+        GASSERT(self->refcount > 0);
+        if (g_atomic_int_dec_and_test(&self->refcount)) {
+            grilio_queue_free(self);
         }
     }
 }
@@ -98,17 +99,17 @@ grilio_queue_unref(
 static
 void
 grilio_queue_add(
-    GRilIoQueue* queue,
+    GRilIoQueue* self,
     GRilIoRequest* req)
 {
     GASSERT(!req->queue);
-    req->queue = queue;
-    if (queue->last_req) {
-        queue->last_req->qnext = req;
-        queue->last_req = req;
+    req->queue = self;
+    if (self->last_req) {
+        self->last_req->qnext = req;
+        self->last_req = req;
     } else {
-        GASSERT(!queue->first_req);
-        queue->first_req = queue->last_req = req;
+        GASSERT(!self->first_req);
+        self->first_req = self->last_req = req;
     }
 }
 
@@ -145,28 +146,28 @@ grilio_queue_remove(
 
 guint
 grilio_queue_send_request(
-    GRilIoQueue* queue,
+    GRilIoQueue* self,
     GRilIoRequest* req,
     guint code)
 {
-    return grilio_queue_send_request_full(queue, req, code, NULL, NULL, NULL);
+    return grilio_queue_send_request_full(self, req, code, NULL, NULL, NULL);
 }
 
 guint
 grilio_queue_send_request_full(
-    GRilIoQueue* queue,
+    GRilIoQueue* self,
     GRilIoRequest* req,
     guint code,
     GRilIoChannelResponseFunc response,
     GDestroyNotify destroy,
     void* user_data)
 {
-    if (G_LIKELY(queue && (!req || req->status == GRILIO_REQUEST_NEW))) {
+    if (G_LIKELY(self && (!req || req->status == GRILIO_REQUEST_NEW))) {
         guint id;
         GRilIoRequest* internal_req = NULL;
         if (!req) req = internal_req = grilio_request_new();
-        grilio_queue_add(queue, req);
-        id = grilio_channel_send_request_full(queue->channel, req, code,
+        grilio_queue_add(self, req);
+        id = grilio_channel_send_request_full(self->channel, req, code,
             response, destroy, user_data);
         /* grilio_channel_send_request_full has no reason to fail */
         GASSERT(id);
@@ -178,15 +179,15 @@ grilio_queue_send_request_full(
 
 gboolean
 grilio_queue_cancel_request(
-    GRilIoQueue* queue,
+    GRilIoQueue* self,
     guint id,
     gboolean notify)
 {
     gboolean ok = FALSE;
-    if (G_LIKELY(queue && id)) {
-        GRilIoRequest* req = grilio_channel_get_request(queue->channel, id);
-        if (req && req->queue == queue) {
-            ok = grilio_channel_cancel_request(queue->channel, id, notify);
+    if (G_LIKELY(self && id)) {
+        GRilIoRequest* req = grilio_channel_get_request(self->channel, id);
+        if (req && req->queue == self) {
+            ok = grilio_channel_cancel_request(self->channel, id, notify);
             GASSERT(ok);
         }
     }
@@ -195,22 +196,51 @@ grilio_queue_cancel_request(
 
 void
 grilio_queue_cancel_all(
-    GRilIoQueue* queue,
+    GRilIoQueue* self,
     gboolean notify)
 {
-    if (G_LIKELY(queue)) {
-        while (queue->first_req) {
-            GRilIoRequest* req = queue->first_req;
-            queue->first_req = req->qnext;
+    if (G_LIKELY(self)) {
+        while (self->first_req) {
+            GRilIoRequest* req = self->first_req;
+            self->first_req = req->qnext;
             if (req->qnext) {
                 req->qnext = NULL;
             } else {
-                GASSERT(queue->last_req == req);
-                queue->last_req = NULL;
+                GASSERT(self->last_req == req);
+                self->last_req = NULL;
             }
             req->queue = NULL;
-            grilio_channel_cancel_request(queue->channel, req->id, notify);
+            grilio_channel_cancel_request(self->channel, req->id, notify);
         }
+    }
+}
+
+GRILIO_TRANSACTION_STATE
+grilio_queue_transaction_start(
+    GRilIoQueue* self)
+{
+    if (G_LIKELY(self)) {
+        return grilio_channel_transaction_start(self->channel, self);
+    }
+    return GRILIO_TRANSACTION_NONE;
+}
+
+GRILIO_TRANSACTION_STATE
+grilio_queue_transaction_state(
+    GRilIoQueue* self)
+{
+    if (G_LIKELY(self)) {
+        return grilio_channel_transaction_state(self->channel, self);
+    }
+    return GRILIO_TRANSACTION_NONE;
+}
+
+void
+grilio_queue_transaction_finish(
+    GRilIoQueue* self)
+{
+    if (G_LIKELY(self)) {
+        grilio_channel_transaction_finish(self->channel, self);
     }
 }
 

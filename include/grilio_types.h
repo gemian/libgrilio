@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -13,8 +13,8 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of the Jolla Ltd nor the names of its contributors
- *      may be used to endorse or promote products derived from this software
+ *   3. Neither the name of Jolla Ltd nor the names of its contributors may
+ *      be used to endorse or promote products derived from this software
  *      without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -45,6 +45,12 @@ extern GLogModule GRILIO_HEXDUMP_LOG_MODULE;
 typedef struct grilio_channel GRilIoChannel;
 typedef struct grilio_request GRilIoRequest;
 typedef struct grilio_queue GRilIoQueue;
+
+typedef enum grilio_transaction_state {
+    GRILIO_TRANSACTION_NONE,
+    GRILIO_TRANSACTION_QUEUED,
+    GRILIO_TRANSACTION_STARTED
+} GRILIO_TRANSACTION_STATE;
 
 typedef enum grilio_packet_type {
     GRILIO_PACKET_REQ,
