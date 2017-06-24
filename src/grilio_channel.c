@@ -196,7 +196,7 @@ grilio_channel_queue_request(
         GASSERT(!queue->first_req);
         queue->first_req = queue->last_req = req;
     }
-    GVERBOSE("Queued request %u (%u)", req->id, req->req_id);
+    GVERBOSE("Queued request %08x (%08x)", req->id, req->req_id);
 }
 
 static
@@ -230,7 +230,7 @@ grilio_channel_requeue_request(
             grilio_request_ref(req));
     }
 
-    GVERBOSE("Queued retry #%d for request %u", req->retry_count, req->id);
+    GVERBOSE("Queued retry #%d for request %08x", req->retry_count, req->id);
     grilio_channel_queue_request(priv, req);
     grilio_channel_schedule_write(self);
 }
@@ -253,7 +253,7 @@ grilio_channel_dequeue_request(
             queue->first_req = queue->last_req = NULL;
         }
         req->status = GRILIO_REQUEST_SENDING;
-        GVERBOSE("Sending request %u (%u)", req->id, req->req_id);
+        GVERBOSE("Sending request %08x (%08x)", req->id, req->req_id);
     }
     return req;
 }
@@ -321,7 +321,7 @@ grilio_channel_schedule_retry(
         g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->id));
     }
 
-    GVERBOSE("Retry #%d for request %u in %u ms", req->retry_count+1,
+    GVERBOSE("Retry #%d for request %08x in %u ms", req->retry_count+1,
         req->id, req->retry_period);
 
     /* Keep the retry queue sorted by deadline */
@@ -361,7 +361,7 @@ grilio_channel_timeout(
         GRilIoRequest* req = value;
         if (key == GINT_TO_POINTER(req->req_id) &&
             req->deadline && req->deadline <= now) {
-            GDEBUG("Request %u (%u) timed out", req->id, req->req_id);
+            GDEBUG("Request %08x (%08x) timed out", req->id, req->req_id);
             GASSERT(!req->next);
             req->next = expired;
             req->deadline = 0;
@@ -582,7 +582,7 @@ grilio_channel_retry_request(
         for (req = priv->first_req; req; req = req->next) {
             if (req->id == id) {
                 /* Already queued */
-                GVERBOSE("Request %u is already queued", id);
+                GVERBOSE("Request %08x is already queued", id);
                 return TRUE;
             }
         }
@@ -590,14 +590,14 @@ grilio_channel_retry_request(
         /* Requests sitting in the retry queue must not be in the table */
         if (g_hash_table_lookup(priv->req_table, GINT_TO_POINTER(id))) {
             /* Just been sent, no reply yet */
-            GVERBOSE("Request %u is in progress", id);
+            GVERBOSE("Request %08x is in progress", id);
             return FALSE;
         }
 
         /* Check the retry queue then */
         for (req = priv->retry_req; req; req = req->next) {
             if (req->id == id) {
-                GDEBUG("Retrying request %u", id);
+                GDEBUG("Retrying request %08x", id);
                 if (prev) {
                     prev->next = req->next;
                 } else {
@@ -612,7 +612,7 @@ grilio_channel_retry_request(
         }
 
         /* Probably an invalid request id */
-        GWARN("Can't retry request %u", id);
+        GWARN("Can't retry request %08x", id);
     }
     return FALSE;
 }
@@ -1201,7 +1201,7 @@ grilio_channel_cancel_request(
             GRilIoRequest* prev = NULL;
             for (req = priv->first_req; req; req = req->next) {
                 if (req->id == id) {
-                    GDEBUG("Cancelled request %u", id);
+                    GDEBUG("Cancelled request %08x", id);
                     if (prev) {
                         prev->next = req->next;
                     } else {
@@ -1247,7 +1247,7 @@ grilio_channel_cancel_request(
             GRilIoRequest* prev = NULL;
             for (req = priv->retry_req; req; req = req->next) {
                 if (req->id == id) {
-                    GDEBUG("Cancelled request %u", id);
+                    GDEBUG("Cancelled request %08x", id);
                     if (prev) {
                         prev->next = req->next;
                     } else {
@@ -1295,7 +1295,7 @@ grilio_channel_cancel_all(
         /* Cancel queued requests */
         while (priv->first_req) {
             req = priv->first_req;
-            GDEBUG("Cancelled request %u", req->id);
+            GDEBUG("Cancelled request %08x", req->id);
             grilio_channel_drop_request(priv, req);
             priv->first_req = req->next;
             if (req->next) {
@@ -1334,7 +1334,7 @@ grilio_channel_cancel_all(
         /* And the retry queue */
         while (priv->retry_req) {
             req = priv->retry_req;
-            GDEBUG("Cancelled request %u", req->id);
+            GDEBUG("Cancelled request %08x", req->id);
             grilio_channel_drop_request(priv, req);
             priv->retry_req = req->next;
             req->next = NULL;
