@@ -43,6 +43,7 @@
 
 #define GRILIO_MAX_PACKET_LEN (0x8000)
 #define GRILIO_SUB_LEN (4)
+#define GRILIO_DEFAULT_BLOCK_REQ_TIMEOUT_MS (30000)
 
 /* Miliseconds to microseconds */
 #define MICROSEC(ms) (((gint64)(ms)) * 1000)
@@ -60,6 +61,13 @@ struct grilio_channel_priv {
     guint last_logger_id;
     GHashTable* req_table;
     GSList* log_list;
+
+    /* Serialization */
+    guint last_block_id;
+    GHashTable* block_ids;
+    GRilIoRequest* block_req;
+    GRilIoQueue* owner;
+    GSList* owner_queue;
 
     /* Timeouts */
     int timeout;
@@ -168,15 +176,39 @@ grilio_channel_log(
 
 static
 guint
+grilio_channel_generate_id(
+    GHashTable* table,
+    guint* id)
+{
+    (*id)++;
+    while (!(*id) || g_hash_table_contains(table, GINT_TO_POINTER((*id)))) {
+        (*id)++;
+    }
+    return (*id);
+}
+
+static
+guint
 grilio_channel_generate_req_id(
     GRilIoChannelPriv* priv)
 {
-    priv->last_req_id++;
-    while (!priv->last_req_id || g_hash_table_contains(priv->req_table,
-           GINT_TO_POINTER(priv->last_req_id))) {
-        priv->last_req_id++;
-    }
-    return priv->last_req_id;
+    return grilio_channel_generate_id(priv->req_table, &priv->last_req_id);
+}
+
+static
+guint
+grilio_channel_generate_block_id(
+    GRilIoChannelPriv* priv)
+{
+    return grilio_channel_generate_id(priv->block_ids, &priv->last_block_id);
+}
+
+static
+gboolean
+grilio_channel_serialized(
+    GRilIoChannelPriv* priv)
+{
+    return priv->block_ids && g_hash_table_size(priv->block_ids);
 }
 
 static
@@ -238,20 +270,33 @@ grilio_channel_requeue_request(
 static
 GRilIoRequest*
 grilio_channel_dequeue_request(
-    GRilIoChannelPriv* queue)
+    GRilIoChannelPriv* priv)
 {
-    GRilIoRequest* req = queue->first_req;
-    if (req) {
-        GASSERT(req->status == GRILIO_REQUEST_QUEUED);
-        if (req->next) {
-            GASSERT(queue->last_req);
-            GASSERT(queue->last_req != req);
-            queue->first_req = req->next;
-            req->next = NULL;
-        } else {
-            GASSERT(queue->last_req == req);
-            queue->first_req = queue->last_req = NULL;
+    GRilIoRequest* prev = NULL;
+    GRilIoRequest* req = priv->first_req;
+    if (priv->owner) {
+        /* If a transaction is in progress, pick the first request that
+         * belongs to the transaction */
+        while (req && req->queue != priv->owner) {
+            prev = req;
+            req = req->next;
         }
+    }
+    if (req) {
+        if (prev) {
+            prev->next = req->next;
+        } else {
+            priv->first_req = req->next;
+        }
+        if (req->next) {
+            req->next = NULL;
+            GASSERT(priv->last_req);
+            GASSERT(priv->last_req != req);
+        } else {
+            GASSERT(priv->last_req == req);
+            priv->last_req = prev;
+        }
+        GASSERT(req->status == GRILIO_REQUEST_QUEUED);
         req->status = GRILIO_REQUEST_SENDING;
         GVERBOSE("Sending request %08x (%08x)", req->id, req->req_id);
     }
@@ -361,12 +406,30 @@ grilio_channel_timeout(
         GRilIoRequest* req = value;
         if (key == GINT_TO_POINTER(req->req_id) &&
             req->deadline && req->deadline <= now) {
-            GDEBUG("Request %08x (%08x) timed out", req->id, req->req_id);
             GASSERT(!req->next);
             req->next = expired;
             req->deadline = 0;
-            expired = grilio_request_ref(req);
+            GDEBUG("%s %08x (%08x) timed out", (priv->block_req == req) ?
+                "Blocking request" : "Request", req->id, req->req_id);
+            if (priv->block_req == req) {
+                expired = priv->block_req;
+                priv->block_req = NULL;
+            } else {
+                expired = grilio_request_ref(req);
+            }
         }
+    }
+
+    if (priv->block_req &&
+        priv->block_req->deadline &&
+        priv->block_req->deadline <= now) {
+        GDEBUG("Blocking request %08x (%08x) timed out",
+            priv->block_req->id, priv->block_req->req_id);
+        GASSERT(!priv->block_req->next);
+        priv->block_req->next = expired;
+        priv->block_req->deadline = 0;
+        expired = priv->block_req;
+        priv->block_req = NULL;
     }
 
     while (expired) {
@@ -380,11 +443,14 @@ grilio_channel_timeout(
                 grilio_channel_schedule_retry(priv, req);
             } else {
                 grilio_channel_drop_request(priv, req);
+                req->status = GRILIO_REQUEST_DONE;
                 if (req->response) {
                     req->response(self, GRILIO_STATUS_TIMEOUT, NULL, 0,
                         req->user_data);
                 }
             }
+        } else {
+            req->status = GRILIO_REQUEST_DONE;
         }
         grilio_request_unref(req);
     }
@@ -409,7 +475,8 @@ grilio_channel_timeout(
     }
 
     grilio_channel_reset_timeout(self);
-    return FALSE;
+    grilio_channel_schedule_write(self);
+    return G_SOURCE_REMOVE;
 }
 
 static
@@ -422,6 +489,10 @@ grilio_channel_reset_timeout(
     const gint64 now = g_get_monotonic_time();
     gint64 deadline = 0;
     gpointer value;
+
+    if (priv->block_req && priv->block_req->deadline) {
+        deadline = priv->block_req->deadline;
+    }
 
     /* This loop shouldn't impact the performance because the hash table
      * typically contains very few entries */
@@ -469,6 +540,7 @@ grilio_channel_write(
 {
     GError* error = NULL;
     gsize bytes_written;
+    int req_timeout;
     GRilIoRequest* req;
     GRilIoChannelPriv* priv = self->priv;
 
@@ -495,6 +567,12 @@ grilio_channel_write(
         return FALSE;
     }
 
+    if (priv->block_req) {
+        GVERBOSE("%s waiting for request %08x to complete", self->name,
+            priv->block_req->req_id);
+        return FALSE;
+    }
+
     req = priv->send_req;
     if (!req) {
         req = priv->send_req = grilio_channel_dequeue_request(priv);
@@ -509,6 +587,20 @@ grilio_channel_write(
             /* There is nothing to send, remove the watch */
             GVERBOSE("%s queue empty", self->name);
             return FALSE;
+        }
+    }
+
+    req_timeout = req->timeout;
+    if (req_timeout == GRILIO_TIMEOUT_DEFAULT && priv->timeout > 0) {
+        req_timeout = priv->timeout;
+    }
+
+    if (grilio_channel_serialized(priv) || req->blocking) {
+        /* Block next requests from being sent while this one is pending */
+        priv->block_req = grilio_request_ref(req);
+        if (req_timeout <= 0) {
+            /* Blocking requests must have a timeout */
+            req_timeout = GRILIO_DEFAULT_BLOCK_REQ_TIMEOUT_MS;
         }
     }
 
@@ -544,13 +636,14 @@ grilio_channel_write(
      * from the queue as well */
     if (!req->response && !grilio_request_can_retry(req)) {
         grilio_queue_remove(req);
+        if (!priv->block_req) {
+            req_timeout = 0;
+        }
     }
-    if ((req->timeout > 0) ||
-        (priv->timeout > 0 && req->timeout == GRILIO_TIMEOUT_DEFAULT)) {
+
+    if (req_timeout > 0) {
         /* This request has a timeout */
-        const int ms = (req->timeout == GRILIO_TIMEOUT_DEFAULT) ?
-            priv->timeout : req->timeout;
-        req->deadline = g_get_monotonic_time() + MICROSEC(ms);
+        req->deadline = g_get_monotonic_time() + MICROSEC(req_timeout);
         if (!priv->next_deadline || req->deadline < priv->next_deadline) {
             grilio_channel_reset_timeout(self);
         }
@@ -577,6 +670,12 @@ grilio_channel_retry_request(
         GRilIoChannelPriv* priv = self->priv;
         GRilIoRequest* prev = NULL;
         GRilIoRequest* req;
+
+        if (priv->block_req && priv->block_req->id == id) {
+            /* Already queued */
+            GVERBOSE("Request %08x is pending", id);
+            return TRUE;
+        }
 
         /* This queue is typically empty or quite small */
         for (req = priv->first_req; req; req = req->next) {
@@ -641,10 +740,11 @@ grilio_channel_connected(
 {
     GRilIoChannelPriv* priv = self->priv;
     GASSERT(!self->connected);
-    if (priv->read_len > 8) {
+    if (priv->read_len > RIL_UNSOL_HEADER_SIZE) {
         GRilIoParser parser;
         guint num = 0;
-        grilio_parser_init(&parser, priv->read_buf + 8, priv->read_len - 8);
+        grilio_parser_init(&parser, priv->read_buf + RIL_UNSOL_HEADER_SIZE,
+            priv->read_len - RIL_UNSOL_HEADER_SIZE);
         if (grilio_parser_get_uint32(&parser, &num) && num == 1 &&
             grilio_parser_get_uint32(&parser, &self->ril_version)) {
             GDEBUG("Connected, RIL version %u", self->ril_version);
@@ -663,7 +763,7 @@ grilio_channel_handle_packet(
     GRilIoChannel* self)
 {
     GRilIoChannelPriv* priv = self->priv;
-    if (priv->read_len >= 8) {
+    if (priv->read_len >= RIL_MIN_HEADER_SIZE) {
         const guint32* buf = (guint32*)priv->read_buf;
         if (buf[0]) {
             /* RIL Unsolicited Event */
@@ -686,7 +786,8 @@ grilio_channel_handle_packet(
 
             /* Event handler gets event code and the data separately */
             g_signal_emit(self, grilio_channel_signals[SIGNAL_UNSOL_EVENT],
-                detail, code, priv->read_buf + 8, priv->read_len - 8);
+                detail, code, priv->read_buf + RIL_UNSOL_HEADER_SIZE,
+                priv->read_len - RIL_UNSOL_HEADER_SIZE);
             return TRUE;
         } else if (priv->read_len >= RIL_RESPONSE_HEADER_SIZE) {
             /* RIL Solicited Response */
@@ -698,6 +799,13 @@ grilio_channel_handle_packet(
             /* Logger receives everything except the length */
             grilio_channel_log(self, GRILIO_PACKET_RESP, id, status,
                 priv->read_buf, priv->read_len);
+
+            if (priv->block_req && priv->block_req->req_id == id) {
+                /* Blocking request has completed */
+                grilio_request_unref(priv->block_req);
+                priv->block_req = NULL;
+                grilio_channel_schedule_write(self);
+            }
 
             /* Handle the case if we receive a response with the id of the
              * packet which we haven't sent yet. */
@@ -990,6 +1098,45 @@ grilio_channel_set_name(
     }
 }
 
+guint
+grilio_channel_serialize(
+    GRilIoChannel* self)
+{
+    guint id = 0;
+    if (G_LIKELY(self)) {
+        GRilIoChannelPriv* priv = self->priv;
+        if (!priv->block_ids) {
+            GDEBUG("Serializing %s", self->name);
+            priv->block_ids = g_hash_table_new(g_direct_hash, g_direct_equal);
+        }
+        id = grilio_channel_generate_block_id(priv);
+        g_hash_table_insert(priv->block_ids, GINT_TO_POINTER(id),
+            GINT_TO_POINTER(id));
+    }
+    return id;
+}
+
+void
+grilio_channel_deserialize(
+    GRilIoChannel* self,
+    guint id)
+{
+    if (G_LIKELY(self) && G_LIKELY(id)) {
+        GRilIoChannelPriv* priv = self->priv;
+        if (grilio_channel_serialized(priv)) {
+            g_hash_table_remove(priv->block_ids, GINT_TO_POINTER(id));
+            if (!grilio_channel_serialized(priv)) {
+                GDEBUG("Deserializing %s", self->name);
+                if (priv->block_req && !priv->block_req->blocking) {
+                    grilio_request_unref(priv->block_req);
+                    priv->block_req = NULL;
+                }
+                grilio_channel_schedule_write(self);
+            }
+        }
+    }
+}
+
 gulong
 grilio_channel_add_connected_handler(
     GRilIoChannel* self,
@@ -1149,6 +1296,84 @@ grilio_channel_send_request_full(
     return 0;
 }
 
+GRILIO_TRANSACTION_STATE
+grilio_channel_transaction_start(
+    GRilIoChannel* self,
+    GRilIoQueue* queue)
+{
+    GRILIO_TRANSACTION_STATE state = GRILIO_TRANSACTION_NONE;
+    if (G_LIKELY(self && queue)) {
+        GRilIoChannelPriv* priv = self->priv;
+        if (!priv->owner) {
+            priv->owner = queue;
+            GASSERT(!priv->owner_queue);
+            state = GRILIO_TRANSACTION_STARTED;
+        } else if (priv->owner == queue) {
+            /* Transaction is already in progress */
+            state = GRILIO_TRANSACTION_STARTED;
+        } else if (priv->owner_queue) {
+            /* Avoid scanning the queue twice */
+            GSList* l = priv->owner_queue;
+            GSList* last = l;
+            while (l) {
+                if (l->data == queue) {
+                    break;
+                }
+                last = l;
+                l = l->next;
+            }
+            if (!l) {
+                /* Not found in the queue */
+                last->next = g_slist_append(NULL, queue);
+            }
+            state = GRILIO_TRANSACTION_QUEUED;
+        } else {
+            /* This is the first entry in the queue */
+            priv->owner_queue = g_slist_append(NULL, queue);
+            state = GRILIO_TRANSACTION_QUEUED;
+        }
+    }
+    return state;
+}
+
+GRILIO_TRANSACTION_STATE
+grilio_channel_transaction_state(
+    GRilIoChannel* self,
+    GRilIoQueue* queue)
+{
+    if (G_LIKELY(self && queue)) {
+        GRilIoChannelPriv* priv = self->priv;
+        if (priv->owner == queue) {
+            return GRILIO_TRANSACTION_STARTED;
+        } else if (g_slist_find(priv->owner_queue, queue)) {
+            return GRILIO_TRANSACTION_QUEUED;
+        }
+    }
+    return GRILIO_TRANSACTION_NONE;
+}
+
+void
+grilio_channel_transaction_finish(
+    GRilIoChannel* self,
+    GRilIoQueue* queue)
+{
+    if (G_LIKELY(self && queue)) {
+        GRilIoChannelPriv* priv = self->priv;
+        if (priv->owner == queue) {
+            if (priv->owner_queue) {
+                priv->owner = priv->owner_queue->data;
+                priv->owner_queue = g_slist_delete_link(priv->owner_queue,
+                    priv->owner_queue);
+            } else {
+                priv->owner = NULL;
+            }
+            grilio_channel_schedule_write(self);
+        } else {
+            priv->owner_queue = g_slist_remove(priv->owner_queue, queue);
+        }
+    }
+}
+
 GRilIoRequest*
 grilio_channel_get_request(
     GRilIoChannel* self,
@@ -1159,6 +1384,8 @@ grilio_channel_get_request(
         GRilIoChannelPriv* priv = self->priv;
         if (priv->send_req && priv->send_req->id == id) {
             req = priv->send_req;
+        } else if (priv->block_req && priv->block_req->id == id) {
+            req = priv->block_req;
         } else {
             req = g_hash_table_lookup(priv->req_table, GINT_TO_POINTER(id));
             if (!req) {
@@ -1182,7 +1409,16 @@ grilio_channel_cancel_request(
 {
     if (G_LIKELY(self && id)) {
         GRilIoChannelPriv* priv = self->priv;
+        GRilIoRequest* block_req = NULL;
         GRilIoRequest* req;
+
+        if (priv->block_req && priv->block_req->id == id) {
+            /* Don't release the reference or change the status yet. However
+             * remember to drop the reference before we return. */
+            block_req = priv->block_req;
+            priv->block_req = NULL;
+        }
+
         if (priv->send_req && priv->send_req->id == id) {
             /* Current request will be unreferenced after it's sent */
             req = priv->send_req;
@@ -1193,8 +1429,11 @@ grilio_channel_cancel_request(
                     req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
                         req->user_data);
                 }
+                grilio_request_unref(block_req);
+                grilio_channel_schedule_write(self);
                 return TRUE;
             } else {
+                grilio_request_unref(block_req);
                 return FALSE;
             }
         } else {
@@ -1219,6 +1458,8 @@ grilio_channel_cancel_request(
                             req->user_data);
                     }
                     grilio_request_unref(req);
+                    grilio_request_unref(block_req);
+                    grilio_channel_schedule_write(self);
                     return TRUE;
                 }
                 prev = req;
@@ -1240,7 +1481,9 @@ grilio_channel_cancel_request(
                     req->user_data);
             }
             grilio_request_unref(req);
+            grilio_request_unref(block_req);
             grilio_channel_reset_timeout(self);
+            grilio_channel_schedule_write(self);
             return TRUE;
         } else {
             /* The last place where it could be is the retry queue */
@@ -1261,11 +1504,20 @@ grilio_channel_cancel_request(
                             req->user_data);
                     }
                     grilio_request_unref(req);
+                    grilio_request_unref(block_req);
                     grilio_channel_reset_timeout(self);
+                    grilio_channel_schedule_write(self);
                     return TRUE;
                 }
                 prev = req;
             }
+        }
+
+        if (block_req) {
+            block_req->status = GRILIO_REQUEST_CANCELLED;
+            grilio_request_unref(block_req);
+            grilio_channel_schedule_write(self);
+            return TRUE;
         }
     }
     return FALSE;
@@ -1278,8 +1530,18 @@ grilio_channel_cancel_all(
 {
     if (G_LIKELY(self)) {
         GRilIoChannelPriv* priv = self->priv;
+        GRilIoRequest* block_req = NULL;
         GRilIoRequest* req;
         GList* ids;
+
+        if (priv->block_req) {
+            /* Don't release the reference or change the status yet.
+             * We will update the status and drop the reference after
+             * we are done with all other requests. */
+            block_req = priv->block_req;
+            priv->block_req = NULL;
+        }
+
         if (priv->send_req) {
             /* Current request will be unreferenced after it's sent */
             req = priv->send_req;
@@ -1351,6 +1613,11 @@ grilio_channel_cancel_all(
             priv->timeout_id = 0;
             priv->next_deadline = 0;
         }
+        /* Make sure the blocking request is marked as cancelled */
+        if (block_req) {
+            block_req->status = GRILIO_REQUEST_CANCELLED;
+            grilio_request_unref(block_req);
+        }
     }
 }
 
@@ -1392,6 +1659,16 @@ grilio_channel_dispose(
         grilio_request_unref(priv->send_req);
         priv->send_req = NULL;
     }
+    if (priv->block_req) {
+        grilio_request_unref(priv->block_req);
+        priv->block_req = NULL;
+    }
+    if (priv->block_ids) {
+        g_hash_table_destroy(priv->block_ids);
+        priv->block_ids = NULL;
+    }
+    GASSERT(!priv->owner);
+    GASSERT(!priv->owner_queue);
     G_OBJECT_CLASS(grilio_channel_parent_class)->dispose(object);
 }
 
@@ -1409,6 +1686,7 @@ grilio_channel_finalize(
     GASSERT(!priv->read_watch_id);
     GASSERT(!priv->write_watch_id);
     GASSERT(!priv->io_channel);
+    GASSERT(!priv->block_ids);
     g_free(priv->name);
     g_free(priv->read_buf);
     g_hash_table_unref(priv->req_table);

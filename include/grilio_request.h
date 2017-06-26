@@ -98,6 +98,11 @@ grilio_request_unref(
     GRilIoRequest* request);
 
 void
+grilio_request_set_blocking(
+    GRilIoRequest* request,
+    gboolean blocking);
+
+void
 grilio_request_set_timeout(
     GRilIoRequest* request,
     int milliseconds);

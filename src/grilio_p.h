@@ -44,6 +44,8 @@
 /* RIL constants */
 #define RIL_REQUEST_HEADER_SIZE (12)
 #define RIL_RESPONSE_HEADER_SIZE (12)
+#define RIL_UNSOL_HEADER_SIZE (8)
+#define RIL_MIN_HEADER_SIZE RIL_UNSOL_HEADER_SIZE
 #define RIL_UNSOL_RIL_CONNECTED 1034
 #define RIL_E_SUCCESS (0)
 
@@ -65,6 +67,7 @@ struct grilio_request {
     int max_retries;
     int retry_count;
     guint retry_period;
+    gboolean blocking;
     GByteArray* bytes;
     GRilIoRequest* next;
     GRilIoRequest* qnext;
@@ -87,6 +90,21 @@ GRilIoRequest*
 grilio_channel_get_request(
     GRilIoChannel* channel,
     guint id);
+
+GRILIO_TRANSACTION_STATE
+grilio_channel_transaction_start(
+    GRilIoChannel* channel,
+    GRilIoQueue* queue);
+
+GRILIO_TRANSACTION_STATE
+grilio_channel_transaction_state(
+    GRilIoChannel* channel,
+    GRilIoQueue* queue);
+
+void
+grilio_channel_transaction_finish(
+    GRilIoChannel* channel,
+    GRilIoQueue* queue);
 
 G_INLINE_FUNC gboolean
 grilio_request_can_retry(GRilIoRequest* req)
