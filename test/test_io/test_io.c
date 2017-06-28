@@ -45,10 +45,12 @@
 
 #define TEST_TIMEOUT (10) /* seconds */
 
-#define RIL_REQUEST_TEST_1 (1)
-#define RIL_REQUEST_TEST_2 (2)
-#define RIL_REQUEST_TEST_3 (3)
-#define RIL_REQUEST_TEST RIL_REQUEST_TEST_1
+#define RIL_REQUEST_TEST_0 (10)
+#define RIL_REQUEST_TEST_1 (11)
+#define RIL_REQUEST_TEST_2 (12)
+#define RIL_REQUEST_TEST_3 (13)
+#define RIL_REQUEST_TEST_4 (14)
+#define RIL_REQUEST_TEST RIL_REQUEST_TEST_0
 
 #define RIL_E_GENERIC_FAILURE 2
 #define RIL_E_REQUEST_NOT_SUPPORTED 6
@@ -76,6 +78,34 @@ test_timeout_expired(
     g_main_loop_quit(test->loop);
     GERR("%s TIMEOUT", test->name);
     return G_SOURCE_REMOVE;
+}
+
+static
+void
+test_response_empty_ok(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    grilio_test_server_add_response_data(test->server, id,
+        GRILIO_STATUS_OK, NULL, 0);
+}
+
+static
+void
+test_response_reflect_ok(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    grilio_test_server_add_response_data(test->server, id, GRILIO_STATUS_OK,
+        data, len);
 }
 
 static
@@ -353,9 +383,9 @@ void
 test_queue_destroy_request(
     void* user_data)
 {
-    TestQueue* queue = user_data;
+    TestQueue* t = user_data;
     GDEBUG("Request destroyed");
-    queue->destroy_count++;
+    t->destroy_count++;
 }
 
 static
@@ -367,13 +397,13 @@ test_queue_response(
     guint len,
     void* user_data)
 {
-    TestQueue* queue = user_data;
+    TestQueue* t = user_data;
     if (status == GRILIO_STATUS_CANCELLED) { 
-        queue->cancel_count++;
-        GDEBUG("%d request(s) cancelled", queue->cancel_count);
+        t->cancel_count++;
+        GDEBUG("%d request(s) cancelled", t->cancel_count);
     } else if (status == GRILIO_STATUS_OK) {
-        queue->success_count++;
-        GDEBUG("%d request(s) cancelled", queue->cancel_count);
+        t->success_count++;
+        GDEBUG("%d request(s) cancelled", t->cancel_count);
     } else {
         GERR("Unexpected response status %d", status);
     }
@@ -388,16 +418,16 @@ test_queue_last_response(
     guint len,
     void* user_data)
 {
-    TestQueue* queue = user_data;
+    TestQueue* t = user_data;
     GDEBUG("Last response status %d", status);
     g_assert(status == GRILIO_STATUS_OK);
 
-    /* 4 events should be cancelled, first one succeed,
+    /* 3 events should be cancelled, first one succeed,
      * this one doesn't count */
-    g_assert(queue->cancel_count == 4);
-    g_assert(queue->success_count == 1);
-    g_assert(queue->destroy_count == 1);
-    g_main_loop_quit(queue->test.loop);
+    g_assert(t->cancel_count == 3);
+    g_assert(t->success_count == 1);
+    g_assert(t->destroy_count == 1);
+    g_main_loop_quit(t->test.loop);
 }
 
 static
@@ -409,27 +439,26 @@ test_queue_first_response(
     guint len,
     void* user_data)
 {
-    TestQueue* queue = user_data;
+    TestQueue* t = user_data;
     GDEBUG("First response status %d", status);
     if (status == GRILIO_STATUS_OK) {
-        queue->success_count++;
-        grilio_queue_cancel_all(queue->queue[1], TRUE);
-        grilio_queue_cancel_request(queue->queue[0], queue->cancel_id, TRUE);
+        t->success_count++;
+        grilio_queue_cancel_all(t->queue[1], TRUE);
+        grilio_queue_cancel_request(t->queue[0], t->cancel_id, TRUE);
 
-        g_assert(!queue->last_id);
-        queue->last_id = test_basic_request(&queue->test,
-            test_queue_last_response);
+        g_assert(!t->last_id);
+        t->last_id = test_basic_request(&t->test, test_queue_last_response);
 
         /* This one stops the event loop */
-        test_basic_response_ok(queue->test.server, "TEST", queue->last_id);
+        test_basic_response_ok(t->test.server, "TEST", t->last_id);
 
         /* This will deallocate the queue, cancelling all the requests in
          * the process. Callbacks won't be notified. Extra ref just improves
          * the code coverage. */
-        grilio_queue_ref(queue->queue[2]);
-        grilio_queue_unref(queue->queue[2]);
-        grilio_queue_unref(queue->queue[2]);
-        queue->queue[2] = NULL;
+        grilio_queue_ref(t->queue[2]);
+        grilio_queue_unref(t->queue[2]);
+        grilio_queue_unref(t->queue[2]);
+        t->queue[2] = NULL;
     }
 }
 
@@ -439,57 +468,51 @@ test_queue_start(
     GRilIoChannel* channel,
     void* user_data)
 {
-    TestQueue* queue = user_data;
+    TestQueue* t = user_data;
     guint id;
 
     /* NULL resistance */
     g_assert(!grilio_queue_send_request_full(NULL, NULL, 0, NULL, NULL, NULL));
 
     /* This entire queue will be cancelled */
-    grilio_queue_send_request_full(queue->queue[1], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
-    grilio_queue_send_request_full(queue->queue[1], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
-
-    /* This one will invoke test_queue_destroy when canceled which will
-     * increment destroy_count */
-    grilio_queue_send_request_full(queue->queue[1], NULL,
-        RIL_REQUEST_TEST, test_queue_response,
-        test_queue_destroy_request, queue);
+    grilio_queue_send_request_full(t->queue[1], NULL,
+        RIL_REQUEST_TEST, test_queue_response, NULL, t);
+    grilio_queue_send_request_full(t->queue[1], NULL,
+        RIL_REQUEST_TEST, test_queue_response, NULL, t);
 
     /* Expected failure to cancel a request that's not in a queue */
-    id = grilio_channel_send_request_full(queue->test.io, NULL,
+    id = grilio_channel_send_request_full(t->test.io, NULL,
         RIL_REQUEST_TEST, test_queue_no_response, NULL, NULL);
     g_assert(id);
-    g_assert(!grilio_queue_cancel_request(queue->queue[0], id, FALSE));
-    g_assert(grilio_channel_cancel_request(queue->test.io, id, FALSE));
+    g_assert(!grilio_queue_cancel_request(t->queue[0], id, FALSE));
+    g_assert(grilio_channel_cancel_request(t->test.io, id, FALSE));
 
     /* Cancel request without callback */
-    grilio_queue_cancel_request(queue->queue[1],
-        grilio_queue_send_request(queue->queue[1], NULL,
+    grilio_queue_cancel_request(t->queue[1],
+        grilio_queue_send_request(t->queue[1], NULL,
             RIL_REQUEST_TEST), FALSE);
 
     /* This one will be cancelled implicitely, when queue will get
      * deallocated. Callbacks won't be notified. */
-    grilio_queue_send_request_full(queue->queue[2], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
-    grilio_queue_send_request_full(queue->queue[2], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
-    grilio_queue_send_request_full(queue->queue[2], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
-    grilio_queue_send_request(queue->queue[2], NULL,
+    grilio_queue_send_request_full(t->queue[2], NULL,
+        RIL_REQUEST_TEST, test_queue_response, NULL, t);
+    grilio_queue_send_request_full(t->queue[2], NULL,
+        RIL_REQUEST_TEST, test_queue_response, NULL, t);
+    grilio_queue_send_request_full(t->queue[2], NULL,
+        RIL_REQUEST_TEST, test_queue_response, NULL, t);
+    grilio_queue_send_request(t->queue[2], NULL,
         RIL_REQUEST_TEST);
 
     /* This one will succeed */
-    test_basic_response_ok(queue->test.server, "QUEUE_TEST",
-        grilio_queue_send_request_full(queue->queue[0], NULL,
+    test_basic_response_ok(t->test.server, "QUEUE_TEST",
+        grilio_queue_send_request_full(t->queue[0], NULL,
             RIL_REQUEST_TEST, test_queue_first_response,
-            NULL, queue));
+            test_queue_destroy_request, t));
 
     /* This one from queue 0 will be cancelled too */
-    queue->cancel_id = grilio_queue_send_request_full(queue->queue[0], NULL,
-        RIL_REQUEST_TEST, test_queue_response, NULL, queue);
-    test_basic_response_ok(queue->test.server, "CANCEL", queue->cancel_id);
+    t->cancel_id = grilio_queue_send_request_full(t->queue[0], NULL,
+        RIL_REQUEST_TEST, test_queue_response, NULL, t);
+    test_basic_response_ok(t->test.server, "CANCEL", t->cancel_id);
 }
 
 static
@@ -497,15 +520,15 @@ void
 test_queue(
     void)
 {
-    TestQueue* queue = test_new(TestQueue, "Queue");
-    Test* test = &queue->test;
+    TestQueue* t = test_new(TestQueue, "Queue");
+    Test* test = &t->test;
 
-    queue->queue[0] = grilio_queue_new(test->io);
-    queue->queue[1] = grilio_queue_new(test->io);
-    queue->queue[2] = grilio_queue_new(test->io);
+    t->queue[0] = grilio_queue_new(test->io);
+    t->queue[1] = grilio_queue_new(test->io);
+    t->queue[2] = grilio_queue_new(test->io);
 
     /* There are no requests with zero id */
-    g_assert(!grilio_queue_cancel_request(queue->queue[0], 0, FALSE));
+    g_assert(!grilio_queue_cancel_request(t->queue[0], 0, FALSE));
 
     /* Test NULL resistance */
     g_assert(!grilio_queue_ref(NULL));
@@ -514,42 +537,42 @@ test_queue(
     grilio_queue_cancel_all(NULL, FALSE);
 
     /* First wait until we get connected to the test server */
-    queue->connected_id = grilio_channel_add_connected_handler(test->io,
-        test_queue_start, queue);
+    t->connected_id = grilio_channel_add_connected_handler(test->io,
+        test_queue_start, t);
 
     /* Run the test */
     g_main_loop_run(test->loop);
 
-    g_assert(queue->last_id);
-    grilio_queue_cancel_all(queue->queue[0], FALSE);
-    grilio_queue_cancel_all(queue->queue[1], FALSE);
-    grilio_queue_unref(queue->queue[0]);
-    grilio_queue_unref(queue->queue[1]);
-    g_assert(!queue->queue[2]); /* This one should already be NULL */
-    grilio_queue_unref(queue->queue[2]);
+    g_assert(t->last_id);
+    grilio_queue_cancel_all(t->queue[0], FALSE);
+    grilio_queue_cancel_all(t->queue[1], FALSE);
+    grilio_queue_unref(t->queue[0]);
+    grilio_queue_unref(t->queue[1]);
+    g_assert(!t->queue[2]); /* This one should already be NULL */
+    grilio_queue_unref(t->queue[2]);
     test_free(test);
 }
 
 /*==========================================================================*
- * Transaction
+ * Transaction1
  *==========================================================================*/
 
-typedef struct test_transaction_data {
+typedef struct test_transaction1_data {
     Test test;
     GRilIoQueue* queue[3];
     guint32 count;
-} TestTransaction;
+} TestTransaction1;
 
 static
 void
-test_transaction_last_response(
+test_transaction1_last_response(
     GRilIoChannel* io,
     int status,
     const void* data,
     guint len,
     void* user_data)
 {
-    TestTransaction* t = user_data;
+    TestTransaction1* t = user_data;
     GDEBUG("Last response status %d", status);
     g_assert(status == GRILIO_STATUS_OK);
 
@@ -560,14 +583,14 @@ test_transaction_last_response(
 
 static
 void
-test_transaction_handle_response(
+test_transaction1_handle_response(
     GRilIoChannel* channel,
     int status,
     const void* data,
     guint len,
     void* user_data)
 {
-    TestTransaction* t = user_data;
+    TestTransaction1* t = user_data;
     GRilIoParser parser;
     guint32 i;
     grilio_parser_init(&parser, data, len);
@@ -584,23 +607,10 @@ test_transaction_handle_response(
 
 static
 void
-test_transaction_response(
-    guint code,
-    guint id,
-    const void* data,
-    guint len,
-    void* server)
-{
-    grilio_test_server_add_response_data(server, id, GRILIO_STATUS_OK,
-        data, len);
-}
-
-static
-void
-test_transaction(
+test_transaction1(
     void)
 {
-    TestTransaction* t = test_new(TestTransaction, "Transaction");
+    TestTransaction1* t = test_new(TestTransaction1, "Transaction1");
     Test* test = &t->test;
     int i;
 
@@ -622,18 +632,18 @@ test_transaction(
 
     /* This one should be processed last */
     grilio_channel_send_request_full(test->io, NULL, RIL_REQUEST_TEST,
-        test_transaction_last_response, NULL, t);
+        test_transaction1_last_response, NULL, t);
 
-    /* test_transaction_response will send the same data back */
+    /* test_response_reflect_ok will send the same data back */
     grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST,
-        test_transaction_response, test->server);
+        test_response_reflect_ok, test);
 
     /* Submit requests in the opposite order */
     for (i=G_N_ELEMENTS(t->queue)-1; i>=0; i--) {
         GRilIoRequest* req = grilio_request_new();
         grilio_request_append_int32(req, i);
         grilio_queue_send_request_full(t->queue[i], req, RIL_REQUEST_TEST,
-            test_transaction_handle_response, NULL, t);
+            test_transaction1_handle_response, NULL, t);
         grilio_request_unref(req);
     }
 
@@ -653,6 +663,159 @@ test_transaction(
     for (i=0; i<G_N_ELEMENTS(t->queue); i++) {
         grilio_queue_unref(t->queue[i]);
     }
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Transaction2
+ *==========================================================================*/
+
+typedef struct test_transaction2_data {
+    Test test;
+    int completion_count;
+    GRilIoQueue* q;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+    GRilIoRequest* txreq1;
+    GRilIoRequest* txreq2;
+} TestTransaction2;
+
+static
+void
+test_transaction2_txreq1_resp(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestTransaction2* t = user_data;
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_request_status(t->txreq1) == GRILIO_REQUEST_SENT);
+    g_assert(grilio_request_status(t->txreq2) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_queue_transaction_state(t->q) ==
+        GRILIO_TRANSACTION_STARTED);
+    grilio_test_server_add_response_data(t->test.server, id,
+        GRILIO_STATUS_OK, NULL, 0);
+}
+
+static
+void
+test_transaction2_txreq2_resp(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestTransaction2* t = user_data;
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_request_status(t->txreq1) == GRILIO_REQUEST_SENT ||
+             grilio_request_status(t->txreq1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->txreq2) == GRILIO_REQUEST_SENT);
+    g_assert(grilio_queue_transaction_state(t->q) ==
+        GRILIO_TRANSACTION_STARTED);
+    grilio_test_server_add_response_data(t->test.server, id,
+        GRILIO_STATUS_OK, NULL, 0);
+    grilio_channel_transaction_finish(t->test.io, t->q);
+}
+
+static
+void
+test_transaction2_req_done(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestTransaction2* t = user_data;
+    t->completion_count++;
+    GDEBUG("Completion count %d", t->completion_count);
+    g_assert(status == GRILIO_STATUS_OK);
+    if (t->completion_count == 4) {
+        g_main_loop_quit(t->test.loop);
+    }
+}
+
+static
+void
+test_transaction2_req1_resp(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestTransaction2* t = user_data;
+    GRilIoChannel* io = t->test.io;
+
+    g_assert(grilio_channel_transaction_start(io, t->q) ==
+        GRILIO_TRANSACTION_STARTED);
+    /* This one will wait for req1 to complete */
+    grilio_queue_send_request_full(t->q, t->txreq1, RIL_REQUEST_TEST_2,
+        test_transaction2_req_done, NULL, t);
+    /* This one will wait for txreq1 to complete */
+    grilio_channel_send_request_full(io, t->req2, RIL_REQUEST_TEST_3,
+        test_transaction2_req_done, NULL, t);
+    /* This one will get ahead of req2 because it's part of the transaction */
+    grilio_queue_send_request_full(t->q, t->txreq2, RIL_REQUEST_TEST_4,
+        test_transaction2_req_done, NULL, t);
+
+    /* Assert the state */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_SENT);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_request_status(t->txreq1) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_request_status(t->txreq2) == GRILIO_REQUEST_QUEUED);
+    grilio_test_server_add_response_data(t->test.server, id,
+        GRILIO_STATUS_OK, NULL, 0);
+}
+
+static
+void
+test_transaction2(
+    void)
+{
+    TestTransaction2* t = test_new(TestTransaction2, "Transaction2");
+    Test* test = &t->test;
+
+    t->q = grilio_queue_new(test->io);
+    t->req1 = grilio_request_new();
+    t->req2 = grilio_request_new();
+    t->txreq1 = grilio_request_new();
+    t->txreq2 = grilio_request_new();
+
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_1,
+        test_transaction2_req1_resp, t);
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_2,
+        test_transaction2_txreq1_resp, t);
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_3,
+        test_response_reflect_ok, test);
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_4,
+        test_transaction2_txreq2_resp, t);
+
+    /* This one will be handled first */
+    grilio_channel_send_request_full(test->io, t->req1, RIL_REQUEST_TEST_1,
+        test_transaction2_req_done, NULL, t);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    /* Assert the state */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->txreq1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->txreq2) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_queue_transaction_state(t->q) == GRILIO_TRANSACTION_NONE);
+
+    /* Cleanup */
+    grilio_request_unref(t->req1);
+    grilio_request_unref(t->req2);
+    grilio_request_unref(t->txreq1);
+    grilio_request_unref(t->txreq2);
+    grilio_queue_unref(t->q);
     test_free(test);
 }
 
@@ -1185,7 +1348,7 @@ test_retry1_continue(
     /* This should result in req2 getting completed */
     GDEBUG("Continuing...");
     grilio_test_server_add_response(test->server, NULL,
-        retry->req2->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
+        retry->req2->current_id, RIL_E_REQUEST_NOT_SUPPORTED);
 }
 
 static
@@ -1292,15 +1455,15 @@ test_retry1_start(
         grilio_request_id(retry->req6)) == retry->req6);
 
     grilio_test_server_add_response(test->server, NULL,
-        retry->req2->req_id, RIL_E_GENERIC_FAILURE);
+        retry->req2->current_id, RIL_E_GENERIC_FAILURE);
     grilio_test_server_add_response(test->server, NULL,
-        retry->req3->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
+        retry->req3->current_id, RIL_E_REQUEST_NOT_SUPPORTED);
     grilio_test_server_add_response(test->server, NULL,
-        retry->req4->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
+        retry->req4->current_id, RIL_E_REQUEST_NOT_SUPPORTED);
     grilio_test_server_add_response(test->server, NULL,
-        retry->req5->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
+        retry->req5->current_id, RIL_E_REQUEST_NOT_SUPPORTED);
     grilio_test_server_add_response(test->server, NULL,
-        retry->req6->req_id, RIL_E_REQUEST_NOT_SUPPORTED);
+        retry->req6->current_id, RIL_E_REQUEST_NOT_SUPPORTED);
     /* And wait for req1 to timeout */
 }
 
@@ -1973,37 +2136,38 @@ typedef struct test_serialize2_data {
 } TestSerialize2;
 
 static
-gboolean
-test_serialize2_response3(
-    void* user_data)
-{
-    Test* test = user_data;
-    TestSerialize2* t = G_CAST(test, TestSerialize2, test);
-    grilio_test_server_add_response(test->server, NULL,
-        grilio_request_id(t->req3), RIL_E_GENERIC_FAILURE);
-    /* De-serialize the channel */
-    grilio_channel_deserialize(test->io, t->serial_id);
-    return G_SOURCE_REMOVE;
-}
-
-static
 void
-test_serialize2_req1_completed(
-    GRilIoChannel* io,
-    int status,
+test_serialize2_req3_resp(
+    guint code,
+    guint id,
     const void* data,
     guint len,
     void* user_data)
 {
     Test* test = user_data;
     TestSerialize2* t = G_CAST(test, TestSerialize2, test);
-    GDEBUG("Request 1 completion status %d", status);
-    g_assert(status == GRILIO_STATUS_OK);
+    grilio_test_server_add_response(test->server, NULL, id,
+        RIL_E_GENERIC_FAILURE);
+    /* De-serialize the channel */
+    grilio_channel_deserialize(test->io, t->serial_id);
+}
+
+static
+void
+test_serialize2_req1_resp(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestSerialize2* t = G_CAST(test, TestSerialize2, test);
+    g_assert(grilio_request_id(t->req1) == id);
+    grilio_test_server_add_response(test->server, NULL, id, GRILIO_STATUS_OK);
     /* Request 2 should is now pending, cancel it */
     g_assert(grilio_channel_cancel_request(test->io,
         grilio_request_id(t->req2), TRUE));
-    /* Submit response 3 but later */
-    g_idle_add(test_serialize2_response3, test);
 }
 
 static
@@ -2031,10 +2195,8 @@ test_serialize2_start(
     TestSerialize2* t = G_CAST(test, TestSerialize2, test);
     GDEBUG("Starting...");
     grilio_channel_send_request(test->io, t->req2, RIL_REQUEST_TEST);
-    grilio_channel_send_request_full(test->io, t->req3,
-        RIL_REQUEST_TEST, test_serialize2_req3_completed, NULL, test);
-    grilio_test_server_add_response(test->server, NULL,
-        grilio_request_id(t->req1), GRILIO_STATUS_OK);
+    grilio_channel_send_request_full(test->io, t->req3, RIL_REQUEST_TEST_3,
+        test_serialize2_req3_completed, NULL, test);
 }
 
 static
@@ -2051,14 +2213,20 @@ test_serialize2(
     t->req2 = grilio_request_new();
     t->req3 = grilio_request_new();
 
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST,
+        test_response_reflect_ok, test);
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_1,
+        test_serialize2_req1_resp, test);
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_3,
+        test_serialize2_req3_resp, test);
+
     /* Start after we have been connected */
     g_assert(!test->io->connected);
     t->serial_id = grilio_channel_serialize(test->io);
     g_assert(t->serial_id);
     /* Submit the first request. There's nothing to retry, just make sure
      * that grilio_channel_retry_request returns TRUE. */
-    id = grilio_channel_send_request_full(test->io, t->req1, RIL_REQUEST_TEST,
-        test_serialize2_req1_completed, NULL, test);
+    id = grilio_channel_send_request(test->io, t->req1, RIL_REQUEST_TEST_1);
     g_assert(grilio_channel_retry_request(test->io, id));
     /* And wait for the channel to get connected */
     grilio_channel_add_connected_handler(test->io,
@@ -2186,113 +2354,457 @@ test_serialize3(
 }
 
 /*==========================================================================*
- * Blocking
+ * Block1
  *==========================================================================*/
 
-typedef struct test_blocking_data {
+typedef struct test_block1_data {
     Test test;
-    GRilIoRequest* req1;
-    GRilIoRequest* req2;
-    gboolean req1_done;
-    gboolean req2_done;
-} TestBlocking;
+    GRilIoRequest* req1; /* Blocking, cancelled before it's sent */
+    GRilIoRequest* req2; /* Blocking, cancelled after it's sent */
+    GRilIoRequest* req3; /* Blocking, should complete normally */
+    GRilIoRequest* req4; /* Non-blocking, should complete normally */
+    gboolean req3_done;
+    gboolean req4_done;
+} TestBlock1;
 
 static
 void
-test_blocking_req1_done(
+test_block1_req3_done(
     GRilIoChannel* channel,
     int status,
     const void* data,
     guint len,
     void* user_data)
 {
-    TestBlocking* t = user_data;
+    TestBlock1* t = user_data;
     g_assert(status == GRILIO_STATUS_OK);
-    g_assert(!t->req1_done);
-    g_assert(!t->req2_done);
-    t->req1_done = TRUE;
+    g_assert(!t->req3_done);
+    g_assert(!t->req4_done);
+    t->req3_done = TRUE;
 }
 
 static
 void
-test_blocking_req2_done(
+test_block1_req4_done(
     GRilIoChannel* channel,
     int status,
     const void* data,
     guint len,
     void* user_data)
 {
-    TestBlocking* t = user_data;
+    TestBlock1* t = user_data;
     g_assert(status == GRILIO_STATUS_OK);
-    g_assert(t->req1_done);
-    g_assert(!t->req2_done);
-    t->req2_done = TRUE;
+    g_assert(t->req3_done);
+    g_assert(!t->req4_done);
+    t->req4_done = TRUE;
     g_main_loop_quit(t->test.loop);
 }
 
 static
 void
-test_blocking_resp1(
+test_block1_resp2(
     guint code,
     guint id,
     const void* data,
     guint len,
     void* user_data)
 {
-    TestBlocking* t = user_data;
-    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_SENT);
-    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_QUEUED);
-    grilio_test_server_add_response_data(t->test.server, id,
-        GRILIO_STATUS_OK, NULL, 0);
-}
-
-static
-void
-test_blocking_resp2(
-    guint code,
-    guint id,
-    const void* data,
-    guint len,
-    void* user_data)
-{
-    TestBlocking* t = user_data;
-    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    TestBlock1* t = user_data;
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_CANCELLED);
     g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_SENT);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_request_status(t->req4) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_request_id(t->req2) == id);
+    /* This one is pending, retry says FALSE  */
+    g_assert(!grilio_channel_retry_request(t->test.io, id));
+    /* This one is queued, retry says TRUE */
+    g_assert(grilio_channel_retry_request(t->test.io,
+        grilio_request_id(t->req3)));
+    /* Cancel this request */
+    g_assert(grilio_channel_cancel_request(t->test.io, id, FALSE));
+    /* And assert that request status has changed */
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_CANCELLED);
+    /* Send the response to unblock the channel */
     grilio_test_server_add_response_data(t->test.server, id,
         GRILIO_STATUS_OK, NULL, 0);
 }
 
 static
 void
-test_blocking(
+test_block1_resp3(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestBlock1* t = user_data;
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_SENT);
+    g_assert(grilio_request_status(t->req4) == GRILIO_REQUEST_QUEUED);
+    grilio_test_server_add_response_data(t->test.server, id,
+        GRILIO_STATUS_OK, NULL, 0);
+}
+
+static
+void
+test_block1_connected(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    TestBlock1* t = user_data;
+    /* Nothing has been sent yet */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_QUEUED);
+    /* Cancel this one before it's been sent */
+    g_assert(grilio_channel_cancel_request(t->test.io,
+        grilio_request_id(t->req1), FALSE));
+}
+
+static
+void
+test_block1(
     void)
 {
-    TestBlocking* t = test_new(TestBlocking, "Blocking");
+    TestBlock1* t = test_new(TestBlock1, "Block1");
+    Test* test = &t->test;
+
+    t->req1 = grilio_request_new();
+    t->req2 = grilio_request_new();
+    t->req3 = grilio_request_new();
+    t->req4 = grilio_request_new();
+
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_2,
+        test_block1_resp2, t);
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_3,
+        test_block1_resp3, t);
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_4,
+        test_response_empty_ok, t);
+
+    grilio_request_set_blocking(t->req1, TRUE);
+    grilio_channel_send_request(test->io, t->req1, RIL_REQUEST_TEST_1);
+    grilio_request_set_blocking(t->req2, TRUE);
+    grilio_channel_send_request(test->io, t->req2, RIL_REQUEST_TEST_2);
+    grilio_request_set_blocking(t->req3, TRUE);
+    grilio_channel_send_request_full(test->io, t->req3, RIL_REQUEST_TEST_3,
+        test_block1_req3_done, NULL, t);
+    grilio_channel_send_request_full(test->io, t->req4, RIL_REQUEST_TEST_4,
+        test_block1_req4_done, NULL, t);
+
+    /* Run the test */
+    grilio_channel_add_connected_handler(test->io, test_block1_connected, t);
+    g_main_loop_run(test->loop);
+
+    g_assert(t->req3_done);
+    g_assert(t->req4_done);
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req4) == GRILIO_REQUEST_DONE);
+    grilio_request_unref(t->req1);
+    grilio_request_unref(t->req2);
+    grilio_request_unref(t->req3);
+    grilio_request_unref(t->req4);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Block2
+ *==========================================================================*/
+
+typedef struct test_block2_data {
+    Test test;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+    GRilIoRequest* req3;
+    GRilIoRequest* req4;
+} TestBlock2;
+
+static
+gboolean
+test_block2_cancel_req1(
+    void* user_data)
+{
+    TestBlock2* t = user_data;
+    /* By now req1 should have been sent */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_SENT);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_request_status(t->req4) == GRILIO_REQUEST_QUEUED);
+    /* Cancel the last one first */
+    g_assert(grilio_channel_cancel_request(t->test.io,
+        grilio_request_id(t->req4), TRUE));
+    /* Cancel everything else */
+    grilio_channel_cancel_all(t->test.io, FALSE);
+    /* And assert that its status has changed */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_CANCELLED);
+    g_main_loop_quit(t->test.loop);
+    return G_SOURCE_REMOVE;
+}
+
+static
+void
+test_block2_connected(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    TestBlock2* t = user_data;
+    /* Nothing has been sent yet */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_QUEUED);
+    /* Will cancel req1 after it's been sent */
+    g_assert(g_idle_add(test_block2_cancel_req1, t));
+}
+
+static
+void
+test_block2(
+    void)
+{
+    TestBlock2* t = test_new(TestBlock2, "Block2");
+    Test* test = &t->test;
+
+    t->req1 = grilio_request_new();
+    t->req2 = grilio_request_new();
+    t->req3 = grilio_request_new();
+    t->req4 = grilio_request_new();
+
+    grilio_request_set_blocking(t->req1, TRUE);
+    grilio_channel_send_request(test->io, t->req1, RIL_REQUEST_TEST);
+    grilio_request_set_blocking(t->req2, TRUE);
+    grilio_channel_send_request(test->io, t->req2, RIL_REQUEST_TEST);
+    grilio_channel_send_request(test->io, t->req3, RIL_REQUEST_TEST);
+    grilio_channel_send_request(test->io, t->req4, RIL_REQUEST_TEST);
+
+    /* Run the test */
+    grilio_channel_add_connected_handler(test->io, test_block2_connected, t);
+    g_main_loop_run(test->loop);
+
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req4) == GRILIO_REQUEST_CANCELLED);
+    grilio_request_unref(t->req1);
+    grilio_request_unref(t->req2);
+    grilio_request_unref(t->req3);
+    grilio_request_unref(t->req4);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * BlockTimeout
+ *==========================================================================*/
+
+typedef struct test_block_timeout_data {
+    Test test;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+} TestBlockTimeout;
+
+static
+void
+test_block_timeout_req2_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestBlockTimeout* t = user_data;
+    GDEBUG("Request 2 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_OK);
+    g_main_loop_quit(t->test.loop);
+}
+
+static
+void
+test_block_timeout_req1_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestBlockTimeout* t = user_data;
+    GDEBUG("Request 1 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_TIMEOUT);
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+}
+
+static
+void
+test_block_timeout(
+    void)
+{
+    TestBlockTimeout* t = test_new(TestBlockTimeout, "BlockTimeout");
     Test* test = &t->test;
 
     t->req1 = grilio_request_new();
     t->req2 = grilio_request_new();
 
-    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_1,
-        test_blocking_resp1, t);
+    /* Reply to the second one, let the first one to time out */
     grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_2,
-        test_blocking_resp2, t);
+        test_response_empty_ok, test);
 
     grilio_request_set_blocking(t->req1, TRUE);
+    grilio_request_set_timeout(t->req1, 10);
     grilio_channel_send_request_full(test->io, t->req1, RIL_REQUEST_TEST_1,
-        test_blocking_req1_done, NULL, t);
+        test_block_timeout_req1_completed, NULL, t);
     grilio_channel_send_request_full(test->io, t->req2, RIL_REQUEST_TEST_2,
-        test_blocking_req2_done, NULL, t);
+        test_block_timeout_req2_completed, NULL, t);
 
     /* Run the test */
     g_main_loop_run(test->loop);
 
-    g_assert(t->req1_done);
-    g_assert(t->req2_done);
     g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
     g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_DONE);
     grilio_request_unref(t->req1);
     grilio_request_unref(t->req2);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * PendingTimeout
+ *==========================================================================*/
+
+typedef struct test_pending_timeout_data {
+    Test test;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+} TestPendingTimeout;
+
+static
+void
+test_pending_timeout_req2_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestPendingTimeout* t = user_data;
+    GDEBUG("Request 2 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_OK);
+    g_main_loop_quit(t->test.loop);
+}
+
+static
+void
+test_pending_timeout(
+    void)
+{
+    TestPendingTimeout* t = test_new(TestPendingTimeout, "PendingTimeout");
+    Test* test = &t->test;
+
+    t->req1 = grilio_request_new();
+    t->req2 = grilio_request_new();
+
+    /* Reply to the second one, let the first one to time out */
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_2,
+        test_response_empty_ok, test);
+
+    grilio_request_set_blocking(t->req1, TRUE);
+    grilio_request_set_timeout(t->req1, -1);
+    grilio_channel_send_request(test->io, t->req1, RIL_REQUEST_TEST_1);
+    grilio_channel_send_request_full(test->io, t->req2, RIL_REQUEST_TEST_2,
+        test_pending_timeout_req2_completed, NULL, t);
+
+    /* First request expires in 10 ms and the second one is sent */
+    grilio_channel_set_pending_timeout(test->io, 10);
+    /* Resistance to invalid parameters */
+    grilio_channel_set_pending_timeout(NULL, 0);
+    grilio_channel_set_pending_timeout(test->io, 0);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    /* The first request remains in the SENT state */
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_SENT);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_DONE);
+    grilio_request_unref(t->req1);
+    grilio_request_unref(t->req2);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Cancel1
+ *==========================================================================*/
+
+typedef struct test_cancel1_data {
+    Test test;
+    GRilIoRequest* req1;
+    GRilIoRequest* req2;
+    GRilIoRequest* req3;
+} TestCancel1;
+
+static
+void
+test_cancel1_req2_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestCancel1* t = user_data;
+    GDEBUG("Request 2 completion status %d", status);
+    g_assert(status == GRILIO_STATUS_CANCELLED);
+    /* This one has already been cancelled */
+    g_assert(!grilio_channel_cancel_request(t->test.io,
+        grilio_request_id(t->req2), TRUE));
+    /* Cancel req3 from the req2 completion callback */
+    g_assert(grilio_channel_cancel_request(t->test.io,
+        grilio_request_id(t->req3), TRUE));
+    g_main_loop_quit(t->test.loop);
+}
+
+static
+void
+test_cancel1_req1_completed(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestCancel1* t = user_data;
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    /* Cancel everything */
+    grilio_channel_cancel_all(t->test.io, TRUE);
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_CANCELLED);
+}
+
+static
+void
+test_cancel1(
+    void)
+{
+    TestCancel1* t = test_new(TestCancel1, "Cancel1");
+    Test* test = &t->test;
+
+    t->req1 = grilio_request_new();
+    t->req2 = grilio_request_new();
+    t->req3 = grilio_request_new();
+
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST,
+        test_response_empty_ok, test);
+
+    grilio_channel_send_request_full(test->io, t->req1, RIL_REQUEST_TEST,
+        test_cancel1_req1_completed, NULL, t);
+    grilio_channel_send_request_full(test->io, t->req2, RIL_REQUEST_TEST,
+        test_cancel1_req2_completed, NULL, t);
+    grilio_channel_send_request(test->io, t->req3, RIL_REQUEST_TEST);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
+    g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_CANCELLED);
+    g_assert(grilio_request_status(t->req3) == GRILIO_REQUEST_CANCELLED);
+    grilio_request_unref(t->req1);
+    grilio_request_unref(t->req2);
+    grilio_request_unref(t->req3);
     test_free(test);
 }
 
@@ -2311,7 +2823,8 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "Connected", test_connected);
     g_test_add_func(TEST_PREFIX "Basic", test_basic);
     g_test_add_func(TEST_PREFIX "Queue", test_queue);
-    g_test_add_func(TEST_PREFIX "Transaction", test_transaction);
+    g_test_add_func(TEST_PREFIX "Transaction1", test_transaction1);
+    g_test_add_func(TEST_PREFIX "Transaction2", test_transaction2);
     g_test_add_func(TEST_PREFIX "WriteError1", test_write_error1);
     g_test_add_func(TEST_PREFIX "WriteError2", test_write_error2);
     g_test_add_func(TEST_PREFIX "WriteError3", test_write_error3);
@@ -2328,7 +2841,11 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "Serialize1", test_serialize1);
     g_test_add_func(TEST_PREFIX "Serialize2", test_serialize2);
     g_test_add_func(TEST_PREFIX "Serialize3", test_serialize3);
-    g_test_add_func(TEST_PREFIX "Blocking", test_blocking);
+    g_test_add_func(TEST_PREFIX "Block1", test_block1);
+    g_test_add_func(TEST_PREFIX "Block2", test_block2);
+    g_test_add_func(TEST_PREFIX "BlockTimeout", test_block_timeout);
+    g_test_add_func(TEST_PREFIX "PendingTimeout", test_pending_timeout);
+    g_test_add_func(TEST_PREFIX "Cancel1", test_cancel1);
     signal(SIGPIPE, SIG_IGN);
     test_init(&test_opt, argc, argv);
     return g_test_run();

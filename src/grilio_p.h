@@ -61,8 +61,9 @@ struct grilio_request {
     int timeout;
     guint32 code;
     guint id;
-    guint req_id;
+    guint current_id;
     gint64 deadline;
+    gint64 submitted;
     GRILIO_REQUEST_STATUS status;
     int max_retries;
     int retry_count;
@@ -90,6 +91,11 @@ GRilIoRequest*
 grilio_channel_get_request(
     GRilIoChannel* channel,
     guint id);
+
+void
+grilio_channel_set_pending_timeout(
+    GRilIoChannel* channel,
+    int ms);
 
 GRILIO_TRANSACTION_STATE
 grilio_channel_transaction_start(
