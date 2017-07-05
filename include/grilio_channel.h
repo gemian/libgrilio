@@ -221,6 +221,11 @@ grilio_channel_cancel_all(
     GRilIoChannel* channel,
     gboolean notify);
 
+void
+grilio_channel_drop_request(
+    GRilIoChannel* channel,
+    guint id);
+
 G_END_DECLS
 
 #endif /* GRILIO_CHANNEL_H */

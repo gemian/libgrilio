@@ -344,7 +344,7 @@ grilio_channel_dequeue_request(
 
 static
 void
-grilio_channel_drop_request(
+grilio_channel_remove_request(
     GRilIoChannelPriv* priv,
     GRilIoRequest* req)
 {
@@ -564,7 +564,7 @@ grilio_channel_timeout(
         if (grilio_request_can_retry(req)) {
             grilio_channel_schedule_retry(priv, req);
         } else {
-            grilio_channel_drop_request(priv, req);
+            grilio_channel_remove_request(priv, req);
             req->status = GRILIO_REQUEST_DONE;
             if (req->response) {
                 req->response(self, GRILIO_STATUS_TIMEOUT, NULL, 0,
@@ -640,13 +640,11 @@ grilio_channel_reset_timeout(
             if (priv->timeout_id) {
                 g_source_remove(priv->timeout_id);
             }
+            priv->next_deadline = deadline;
             priv->timeout_id = (deadline <= now) ?
                 g_idle_add(grilio_channel_timeout, self) :
                 g_timeout_add(((deadline - now) + 999)/1000,
                     grilio_channel_timeout, self);
-            if (priv->timeout_id) {
-                priv->next_deadline = deadline;
-            }
         }
     } else if (priv->timeout_id) {
         g_source_remove(priv->timeout_id);
@@ -953,7 +951,7 @@ grilio_channel_handle_packet(
                     grilio_channel_schedule_retry(priv, req);
                     grilio_channel_reset_timeout(self);
                 } else {
-                    grilio_channel_drop_request(priv, req);
+                    grilio_channel_remove_request(priv, req);
                     req->status = GRILIO_REQUEST_DONE;
                     if (req->response) {
                         req->response(self, status, resp, len, req->user_data);
@@ -1571,7 +1569,7 @@ grilio_channel_cancel_request(
             req = priv->send_req;
             if (req->status != GRILIO_REQUEST_CANCELLED) {
                 req->status = GRILIO_REQUEST_CANCELLED;
-                grilio_channel_drop_request(priv, req);
+                grilio_channel_remove_request(priv, req);
                 if (notify && req->response) {
                     req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
                         req->user_data);
@@ -1599,7 +1597,7 @@ grilio_channel_cancel_request(
                     } else {
                         priv->last_req = prev;
                     }
-                    grilio_channel_drop_request(priv, req);
+                    grilio_channel_remove_request(priv, req);
                     req->status = GRILIO_REQUEST_CANCELLED;
                     if (notify && req->response) {
                         req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
@@ -1622,7 +1620,7 @@ grilio_channel_cancel_request(
              * may be holding the last one, i.e. removing request from 
              * hash table may deallocate the request */
             grilio_request_ref(req);
-            grilio_channel_drop_request(priv, req);
+            grilio_channel_remove_request(priv, req);
             req->status = GRILIO_REQUEST_CANCELLED;
             if (notify && req->response) {
                 req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
@@ -1647,7 +1645,7 @@ grilio_channel_cancel_request(
                     }
                     req->next = NULL;
                     req->status = GRILIO_REQUEST_CANCELLED;
-                    grilio_channel_drop_request(priv, req);
+                    grilio_channel_remove_request(priv, req);
                     if (notify && req->response) {
                         req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
                             req->user_data);
@@ -1703,7 +1701,7 @@ grilio_channel_cancel_all(
             req = priv->send_req;
             if (req->status != GRILIO_REQUEST_CANCELLED) {
                 req->status = GRILIO_REQUEST_CANCELLED;
-                grilio_channel_drop_request(priv, req);
+                grilio_channel_remove_request(priv, req);
                 if (notify && req->response) {
                     req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
                         req->user_data);
@@ -1714,7 +1712,7 @@ grilio_channel_cancel_all(
         while (priv->first_req) {
             req = priv->first_req;
             GDEBUG("Cancelled request %08x (%08x)", req->id, req->current_id);
-            grilio_channel_drop_request(priv, req);
+            grilio_channel_remove_request(priv, req);
             priv->first_req = req->next;
             if (req->next) {
                 req->next = NULL;
@@ -1739,7 +1737,7 @@ grilio_channel_cancel_all(
                 req = g_hash_table_lookup(priv->req_table, link->data);
                 if (req) {
                     grilio_request_ref(req);
-                    grilio_channel_drop_request(priv, req);
+                    grilio_channel_remove_request(priv, req);
                     req->status = GRILIO_REQUEST_CANCELLED;
                     if (notify && req->response) {
                         req->response(self, GRILIO_STATUS_CANCELLED, NULL, 0,
@@ -1755,7 +1753,7 @@ grilio_channel_cancel_all(
         while (priv->retry_req) {
             req = priv->retry_req;
             GDEBUG("Cancelled request %08x (%08x)", req->id, req->current_id);
-            grilio_channel_drop_request(priv, req);
+            grilio_channel_remove_request(priv, req);
             priv->retry_req = req->next;
             req->next = NULL;
             req->status = GRILIO_REQUEST_CANCELLED;
@@ -1775,6 +1773,35 @@ grilio_channel_cancel_all(
         /* Unreference the blocking request */
         GASSERT(!block_req || block_req->status == GRILIO_REQUEST_CANCELLED);
         grilio_request_unref(block_req);
+    }
+}
+
+/**
+ * Same as grilio_channel_cancel_request but also removes the cancelled
+ * request from the pending list so that it no longer prevents blocking
+ * requests from being submitted. This should only be used for those
+ * requests which RIL doesn't bother to reply to (which is not supposed
+ * to happen but unfortunately does).
+ */
+void
+grilio_channel_drop_request(
+    GRilIoChannel* self,
+    guint id)
+{
+    if (G_LIKELY(self)) {
+        GRilIoChannelPriv* priv = self->priv;
+        gpointer key = GINT_TO_POINTER(id);
+        GRilIoRequest* pending;
+        grilio_channel_cancel_request(self, id, FALSE);
+        pending = g_hash_table_lookup(priv->pending, key);
+        if (pending) {
+            GDEBUG("Dropped pending request %08x (%08x)", pending->id,
+                pending->current_id);
+            pending->submitted = 0;
+            g_hash_table_remove(priv->pending, key);
+            grilio_channel_reset_pending_timeout(self);
+            grilio_channel_schedule_write(self);
+        }
     }
 }
 
