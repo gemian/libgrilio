@@ -58,6 +58,7 @@ GLOG_MODULE_DEFINE("grilio");
 /* Object definition */
 struct grilio_channel_priv {
     char* name;
+    char* log_prefix;
     GIOChannel* io_channel;
     guint read_watch_id;
     guint write_watch_id;
@@ -259,7 +260,8 @@ grilio_channel_queue_request(
         GASSERT(!queue->first_req);
         queue->first_req = queue->last_req = req;
     }
-    GVERBOSE("Queued request %08x (%08x)", req->id, req->current_id);
+    GVERBOSE("Queued %srequest %u (%08x/%08x)", queue->log_prefix,
+        req->code, req->id, req->current_id);
 }
 
 static
@@ -355,7 +357,8 @@ grilio_channel_dequeue_request(
         }
         GASSERT(req->status == GRILIO_REQUEST_QUEUED);
         req->status = GRILIO_REQUEST_SENDING;
-        GVERBOSE("Sending request %08x (%08x)", req->id, req->current_id);
+        GVERBOSE("Sending %srequest %u (%08x/%08x)", priv->log_prefix,
+            req->code, req->id, req->current_id);
     }
     return req;
 }
@@ -472,8 +475,8 @@ grilio_channel_pending_timeout(
         GRilIoRequest* req = value;
         const gint64 t = grilio_channel_pending_deadline(priv, req);
         if (t <= now) {
-            GDEBUG("Pending request %08x (%08x) expired", req->id,
-                req->current_id);
+            GDEBUG("Pending %srequest %u (%08x/%08x) expired",
+                priv->log_prefix, req->code, req->id, req->current_id);
             if (req == priv->block_req) {
                 /* Let the life continue */
                 grilio_request_unref(priv->block_req);
@@ -560,8 +563,9 @@ grilio_channel_timeout(
             GASSERT(!req->next);
             req->next = expired;
             req->deadline = 0;
-            GDEBUG("%s %08x (%08x) timed out", (priv->block_req == req) ?
-                "Blocking request" : "Request", req->id, req->current_id);
+            GDEBUG("%s%srequest %u (%08x/%08x) timed out",
+                (priv->block_req == req) ? "Blocking " : "",
+                priv->log_prefix, req->code, req->id, req->current_id);
             if (priv->block_req == req) {
                 expired = priv->block_req;
                 priv->block_req = NULL;
@@ -1247,7 +1251,13 @@ grilio_channel_set_name(
     if (G_LIKELY(self)) {
         GRilIoChannelPriv* priv = self->priv;
         g_free(priv->name);
+        g_free(priv->log_prefix);
         self->name = priv->name = g_strdup(name);
+        if (name && name[0]) {
+            priv->log_prefix = g_strconcat(name, " ", NULL);
+        } else {
+            priv->log_prefix = g_strdup("");
+        }
     }
 }
 
@@ -1635,8 +1645,8 @@ grilio_channel_cancel_request(
             GRilIoRequest* prev = NULL;
             for (req = priv->first_req; req; req = req->next) {
                 if (req->id == id) {
-                    GDEBUG("Cancelled request %08x (%08x)", id,
-                        req->current_id);
+                    GDEBUG("Cancelled %srequest %u (%08x/%08x)",
+                        priv->log_prefix, req->code, req->id, req->current_id);
                     if (prev) {
                         prev->next = req->next;
                     } else {
@@ -1686,8 +1696,8 @@ grilio_channel_cancel_request(
             GRilIoRequest* prev = NULL;
             for (req = priv->retry_req; req; req = req->next) {
                 if (req->id == id) {
-                    GDEBUG("Cancelled request %08x (%08x)", id,
-                        req->current_id);
+                    GDEBUG("Cancelled %srequest %u (%08x/%08x)",
+                        priv->log_prefix, req->code, req->id, req->current_id);
                     if (prev) {
                         prev->next = req->next;
                     } else {
@@ -1761,7 +1771,8 @@ grilio_channel_cancel_all(
         /* Cancel queued requests */
         while (priv->first_req) {
             req = priv->first_req;
-            GDEBUG("Cancelled request %08x (%08x)", req->id, req->current_id);
+            GDEBUG("Cancelled %srequest %u (%08x/%08x)", priv->log_prefix,
+                req->code, req->id, req->current_id);
             grilio_channel_remove_request(priv, req);
             priv->first_req = req->next;
             if (req->next) {
@@ -1802,7 +1813,8 @@ grilio_channel_cancel_all(
         /* And the retry queue */
         while (priv->retry_req) {
             req = priv->retry_req;
-            GDEBUG("Cancelled request %08x (%08x)", req->id, req->current_id);
+            GDEBUG("Cancelled %srequest %u (%08x/%08x)", priv->log_prefix,
+                req->code, req->id, req->current_id);
             grilio_channel_remove_request(priv, req);
             priv->retry_req = req->next;
             req->next = NULL;
@@ -1841,13 +1853,13 @@ grilio_channel_drop_request(
     if (G_LIKELY(self)) {
         GRilIoChannelPriv* priv = self->priv;
         gpointer key = GINT_TO_POINTER(id);
-        GRilIoRequest* pending;
+        GRilIoRequest* req;
         grilio_channel_cancel_request(self, id, FALSE);
-        pending = g_hash_table_lookup(priv->pending, key);
-        if (pending) {
-            GDEBUG("Dropped pending request %08x (%08x)", pending->id,
-                pending->current_id);
-            pending->submitted = 0;
+        req = g_hash_table_lookup(priv->pending, key);
+        if (req) {
+            GDEBUG("Dropped pending %srequest %u (%08x/%08x)",
+                priv->log_prefix, req->code, req->id, req->current_id);
+            req->submitted = 0;
             g_hash_table_remove(priv->pending, key);
             grilio_channel_reset_pending_timeout(self);
             grilio_channel_schedule_write(self);
@@ -1876,6 +1888,7 @@ grilio_channel_init(
         NULL, grilio_request_unref_proc);
     priv->timeout = GRILIO_TIMEOUT_NONE;
     priv->pending_timeout = GRILIO_DEFAULT_PENDING_TIMEOUT_MS;
+    priv->log_prefix = g_strdup("");
 
     self->priv = priv;
     self->name = "RIL";
@@ -1927,6 +1940,7 @@ grilio_channel_finalize(
         g_source_remove(priv->pending_timeout_id);
     }
     g_free(priv->name);
+    g_free(priv->log_prefix);
     g_free(priv->read_buf);
     g_hash_table_destroy(priv->req_table);
     g_hash_table_destroy(priv->pending);
