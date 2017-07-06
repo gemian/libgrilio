@@ -65,6 +65,7 @@ struct grilio_channel_priv {
     guint last_logger_id;
     GHashTable* req_table;
     GHashTable* pending;
+    gboolean last_pending;
     int pending_timeout;
     guint pending_timeout_id;
     gint64 next_pending_deadline;
@@ -117,6 +118,8 @@ enum grilio_channel_signal {
     SIGNAL_UNSOL_EVENT,
     SIGNAL_ERROR,
     SIGNAL_EOF,
+    SIGNAL_OWNER,
+    SIGNAL_PENDING,
     SIGNAL_COUNT
 };
 
@@ -124,6 +127,8 @@ enum grilio_channel_signal {
 #define SIGNAL_UNSOL_EVENT_NAME "grilio-unsol-event"
 #define SIGNAL_ERROR_NAME       "grilio-error"
 #define SIGNAL_EOF_NAME         "grilio-eof"
+#define SIGNAL_OWNER_NAME       "grilio-owner"
+#define SIGNAL_PENDING_NAME     "grilio-pending"
 
 #define SIGNAL_UNSOL_EVENT_DETAIL_FORMAT        "%x"
 #define SIGNAL_UNSOL_EVENT_DETAIL_MAX_LENGTH    (8)
@@ -222,6 +227,19 @@ grilio_channel_serialized(
     GRilIoChannelPriv* priv)
 {
     return priv->block_ids && g_hash_table_size(priv->block_ids);
+}
+
+static
+void
+grilio_channel_update_pending(
+    GRilIoChannel* self)
+{
+    const gboolean has_pending = grilio_channel_has_pending_requests(self);
+    GRilIoChannelPriv* priv = self->priv;
+    if (priv->last_pending != has_pending) {
+        priv->last_pending = has_pending;
+        g_signal_emit(self, grilio_channel_signals[SIGNAL_PENDING], 0);
+    }
 }
 
 static
@@ -467,6 +485,7 @@ grilio_channel_pending_timeout(
 
     grilio_channel_reset_pending_timeout(self);
     grilio_channel_schedule_write(self);
+    grilio_channel_update_pending(self);
     return G_SOURCE_REMOVE;
 }
 
@@ -558,6 +577,7 @@ grilio_channel_timeout(
         req->next = NULL;
         if (g_hash_table_remove(priv->pending,
             GINT_TO_POINTER(req->current_id))) {
+            grilio_channel_update_pending(self);
             pending_expired = TRUE;
         }
         g_hash_table_remove(priv->req_table, GINT_TO_POINTER(req->id));
@@ -598,6 +618,7 @@ grilio_channel_timeout(
     }
     grilio_channel_reset_timeout(self);
     grilio_channel_schedule_write(self);
+    grilio_channel_update_pending(self);
     return G_SOURCE_REMOVE;
 }
 
@@ -709,6 +730,7 @@ grilio_channel_write(
                 GINT_TO_POINTER(req->current_id),
                 grilio_request_ref(req));
             grilio_channel_reset_pending_timeout(self);
+            grilio_channel_update_pending(self);
         } else {
             /* There is nothing to send, remove the watch */
             GVERBOSE("%s has nothing to send", self->name);
@@ -910,7 +932,6 @@ grilio_channel_handle_packet(
             g_signal_emit(self, grilio_channel_signals[SIGNAL_UNSOL_EVENT],
                 detail, code, priv->read_buf + RIL_UNSOL_HEADER_SIZE,
                 priv->read_len - RIL_UNSOL_HEADER_SIZE);
-            return TRUE;
         } else if (priv->read_len >= RIL_RESPONSE_HEADER_SIZE) {
             /* RIL Solicited Response */
             const guint32 id = GUINT32_FROM_RIL(buf[1]);
@@ -961,17 +982,17 @@ grilio_channel_handle_packet(
                 /* Release temporary reference */
                 grilio_request_unref(req);
             }
-
             /* Completed request may unblock the writes */
             grilio_channel_schedule_write(self);
-            return TRUE;
+            grilio_channel_update_pending(self);
         }
+        return TRUE;
+    } else {
+        grilio_channel_handle_error(self, GRILIO_ERROR_READ,
+            g_error_new(G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                "Packet too short (%u bytes)", priv->read_len));
+        return FALSE;
     }
-
-    grilio_channel_handle_error(self, GRILIO_ERROR_READ,
-        g_error_new(G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-            "Packet too short (%u bytes)", priv->read_len));
-    return FALSE;
 }
 
 static
@@ -1269,6 +1290,13 @@ grilio_channel_deserialize(
     }
 }
 
+gboolean
+grilio_channel_has_pending_requests(
+    GRilIoChannel* self)
+{
+    return G_LIKELY(self) && g_hash_table_size(self->priv->pending) > 0;
+}
+
 gulong
 grilio_channel_add_connected_handler(
     GRilIoChannel* self,
@@ -1322,6 +1350,26 @@ grilio_channel_add_error_handler(
 {
     return (G_LIKELY(self) && G_LIKELY(func)) ? g_signal_connect(self,
         SIGNAL_ERROR_NAME, G_CALLBACK(func), arg) : 0;
+}
+
+gulong
+grilio_channel_add_owner_changed_handler(
+    GRilIoChannel* self,
+    GRilIoChannelEventFunc func,
+    void* arg)
+{
+    return (G_LIKELY(self) && G_LIKELY(func)) ? g_signal_connect(self,
+        SIGNAL_OWNER_NAME, G_CALLBACK(func), arg) : 0;
+}
+
+gulong
+grilio_channel_add_pending_changed_handler(
+    GRilIoChannel* self,
+    GRilIoChannelEventFunc func,
+    void* arg)
+{
+    return (G_LIKELY(self) && G_LIKELY(func)) ? g_signal_connect(self,
+        SIGNAL_PENDING_NAME, G_CALLBACK(func), arg) : 0;
 }
 
 void
@@ -1453,6 +1501,7 @@ grilio_channel_transaction_start(
             priv->owner = queue;
             GASSERT(!priv->owner_queue);
             state = GRILIO_TRANSACTION_STARTED;
+            g_signal_emit(self, grilio_channel_signals[SIGNAL_OWNER], 0);
         } else if (priv->owner == queue) {
             /* Transaction is already in progress */
             state = GRILIO_TRANSACTION_STARTED;
@@ -1512,6 +1561,7 @@ grilio_channel_transaction_finish(
             } else {
                 priv->owner = NULL;
             }
+            g_signal_emit(self, grilio_channel_signals[SIGNAL_OWNER], 0);
             grilio_channel_schedule_write(self);
         } else {
             priv->owner_queue = g_slist_remove(priv->owner_queue, queue);
@@ -1801,6 +1851,7 @@ grilio_channel_drop_request(
             g_hash_table_remove(priv->pending, key);
             grilio_channel_reset_pending_timeout(self);
             grilio_channel_schedule_write(self);
+            grilio_channel_update_pending(self);
         }
     }
 }
@@ -1908,6 +1959,12 @@ grilio_channel_class_init(
             G_TYPE_NONE, 1, G_TYPE_ERROR);
     grilio_channel_signals[SIGNAL_EOF] =
         g_signal_new(SIGNAL_EOF_NAME, G_OBJECT_CLASS_TYPE(klass),
+            G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+    grilio_channel_signals[SIGNAL_OWNER] =
+        g_signal_new(SIGNAL_OWNER_NAME, G_OBJECT_CLASS_TYPE(klass),
+            G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+    grilio_channel_signals[SIGNAL_PENDING] =
+        g_signal_new(SIGNAL_PENDING_NAME, G_OBJECT_CLASS_TYPE(klass),
             G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
 }
 

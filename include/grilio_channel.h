@@ -138,6 +138,10 @@ grilio_channel_deserialize(
     GRilIoChannel* self,
     guint id);
 
+gboolean
+grilio_channel_has_pending_requests(
+    GRilIoChannel* self);
+
 guint
 grilio_channel_add_logger(
     GRilIoChannel* channel,
@@ -177,6 +181,18 @@ gulong
 grilio_channel_add_error_handler(
     GRilIoChannel* channel,
     GRilIoChannelErrorFunc func,
+    void* arg);
+
+gulong
+grilio_channel_add_owner_changed_handler(
+    GRilIoChannel* channel,
+    GRilIoChannelEventFunc func,
+    void* arg);
+
+gulong
+grilio_channel_add_pending_changed_handler(
+    GRilIoChannel* channel,
+    GRilIoChannelEventFunc func,
     void* arg);
 
 void

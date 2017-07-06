@@ -213,11 +213,22 @@ test_connected_callback(
 
 static
 void
+test_connected_pending_event(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    /* This is not supposed to happen */
+    g_assert(FALSE);
+}
+
+static
+void
 test_connected(
     void)
 {
     TestConnected* data = test_new(TestConnected, "Connected");
     Test* test = &data->test;
+    gulong pending_id;
 
     data->event_id = grilio_channel_add_unsol_event_handler(test->io,
             test_connected_event, RIL_UNSOL_RIL_CONNECTED, data);
@@ -225,12 +236,16 @@ test_connected(
     data->connected_id = grilio_channel_add_connected_handler(test->io,
             test_connected_callback, data);
     g_assert(data->connected_id);
+    pending_id = grilio_channel_add_pending_changed_handler(test->io,
+        test_connected_pending_event, data);
+    g_assert(pending_id);
 
     g_main_loop_run(test->loop);
     g_assert(data->event_count == 2);
     g_assert(!data->connected_id);
     g_assert(!data->event_id);
 
+    grilio_channel_remove_handler(test->io, pending_id);
     test_free(test);
 }
 
@@ -254,6 +269,7 @@ test_basic_response(
     char* text;
 
     g_assert(status == GRILIO_STATUS_OK);
+    g_assert(!grilio_channel_has_pending_requests(test->io));
 
     /* Unpack the string */
     grilio_parser_init(&parser, data, len);
@@ -302,12 +318,24 @@ test_basic_response_ok(
 
 static
 void
+test_basic_inc(
+    GRilIoChannel* channel,
+    void* user_data)
+{
+    guint* count = user_data;
+    (*count)++;
+}
+
+static
+void
 test_basic(
     void)
 {
     Test* test = test_new(Test, "Basic");
     GRilIoRequest* req = grilio_request_new();
-    guint id;
+    guint id, pending_event_count = 0;
+    gulong pending_id = grilio_channel_add_pending_changed_handler(test->io,
+        test_basic_inc, &pending_event_count);
 
     /* Test NULL resistance */
     g_assert(!grilio_request_retry_count(NULL));
@@ -325,6 +353,13 @@ test_basic(
     g_assert(!grilio_channel_add_disconnected_handler(test->io, NULL, NULL));
     g_assert(!grilio_channel_add_unsol_event_handler(NULL, NULL, 0, NULL));
     g_assert(!grilio_channel_add_unsol_event_handler(test->io, NULL, 0, NULL));
+    g_assert(!grilio_channel_add_error_handler(NULL, NULL, NULL));
+    g_assert(!grilio_channel_add_error_handler(test->io, NULL, NULL));
+    g_assert(!grilio_channel_add_owner_changed_handler(NULL, NULL, NULL));
+    g_assert(!grilio_channel_add_owner_changed_handler(test->io, NULL, NULL));
+    g_assert(!grilio_channel_add_pending_changed_handler(NULL, NULL, NULL));
+    g_assert(!grilio_channel_add_pending_changed_handler(test->io, NULL, NULL));
+    g_assert(!grilio_channel_has_pending_requests(NULL));
     g_assert(!grilio_channel_send_request(NULL, NULL, 0));
     g_assert(!grilio_channel_get_request(NULL, 0));
     g_assert(!grilio_channel_get_request(test->io, 0));
@@ -347,6 +382,8 @@ test_basic(
 
     g_main_loop_run(test->loop);
     g_assert(grilio_request_status(req) == GRILIO_REQUEST_DONE);
+    g_assert(pending_event_count > 0);
+    grilio_channel_remove_handler(test->io, pending_id);
     grilio_request_unref(req);
     test_free(test);
 }
@@ -560,8 +597,18 @@ test_queue(
 typedef struct test_transaction1_data {
     Test test;
     GRilIoQueue* queue[3];
-    guint32 count;
+    guint count;
 } TestTransaction1;
+
+static
+void
+test_transaction1_owner_changed(
+    GRilIoChannel* channel,
+    void* user_data)
+{
+    guint* count = user_data;
+    (*count)++;
+}
 
 static
 void
@@ -613,6 +660,9 @@ test_transaction1(
     TestTransaction1* t = test_new(TestTransaction1, "Transaction1");
     Test* test = &t->test;
     int i;
+    guint owner_change_count = 0;
+    gulong owner_change_id = grilio_channel_add_owner_changed_handler(test->io,
+        test_transaction1_owner_changed, &owner_change_count);
 
     for (i=0; i<G_N_ELEMENTS(t->queue); i++) {
         GRILIO_TRANSACTION_STATE state;
@@ -628,6 +678,10 @@ test_transaction1(
         /* Second time makes no difference, the state doesn't change */
         g_assert(grilio_queue_transaction_start(t->queue[i]) == state);
         g_assert(grilio_queue_transaction_state(t->queue[i]) == state);
+        /* The first queue becomes and stays the owner */
+        g_assert(owner_change_count == 1);
+        g_assert(grilio_queue_transaction_state(t->queue[0]) ==
+            GRILIO_TRANSACTION_STARTED);
     }
 
     /* This one should be processed last */
@@ -663,6 +717,9 @@ test_transaction1(
     for (i=0; i<G_N_ELEMENTS(t->queue); i++) {
         grilio_queue_unref(t->queue[i]);
     }
+
+    g_assert(owner_change_count == G_N_ELEMENTS(t->queue)+1);
+    grilio_channel_remove_handler(test->io, owner_change_id);
     test_free(test);
 }
 
@@ -2083,6 +2140,7 @@ test_serialize1_start(
         RIL_REQUEST_TEST, test_serialize1_req5_completed, NULL, test);
     grilio_test_server_add_response(test->server, NULL,
         grilio_request_id(t->req1), GRILIO_STATUS_OK);
+    g_assert(grilio_channel_has_pending_requests(test->io));
 }
 
 static
