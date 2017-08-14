@@ -1,0 +1,6 @@
+libgrilio (1.0.17) unstable; urgency=low
+
+  * Added grilio_channel_remove_all_handlers
+  * Added debian packaging
+
+ -- Slava Monich <slava.monich@jolla.com>  Mon, 14 Aug 2017 23:25:23 +0300
