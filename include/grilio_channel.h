@@ -206,6 +206,9 @@ grilio_channel_remove_handlers(
     gulong *ids,
     guint count);
 
+#define grilio_channel_remove_all_handlers(channel,ids) \
+    grilio_channel_remove_handlers(channel, ids, G_N_ELEMENTS(ids))
+
 guint
 grilio_channel_send_request(
     GRilIoChannel* channel,
