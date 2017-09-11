@@ -303,8 +303,23 @@ grilio_test_server_add_data(
 }
 
 void
-grilio_test_server_add_response_data(
+grilio_test_server_add_ack(
     GRilIoTestServer* server,
+    GRilIoRequest* req,
+    guint id)
+{
+    guint32 ack[3];
+    ack[0] = GUINT32_TO_BE(8);
+    ack[1] = GUINT32_TO_RIL(RIL_PACKET_TYPE_SOLICITED_ACK);
+    ack[2] = GUINT32_TO_RIL(id);
+    grilio_test_server_add_data(server, ack, sizeof(ack));
+}
+
+static
+void
+grilio_test_server_add_response_data_full(
+    GRilIoTestServer* server,
+    RIL_PACKET_TYPE type,
     guint id,
     guint status,
     const void* data,
@@ -312,16 +327,29 @@ grilio_test_server_add_response_data(
 {
     guint32* header;
     guint oldlen = server->write_data->len;
-    g_byte_array_set_size(server->write_data, oldlen + 16);
+    g_byte_array_set_size(server->write_data, oldlen +
+        4 + RIL_RESPONSE_HEADER_SIZE);
     header = (guint32*)(server->write_data->data + oldlen);
     header[0] = GUINT32_TO_BE(len + RIL_RESPONSE_HEADER_SIZE);
-    header[1] = 0;  /* Solicited Response */
+    header[1] = GUINT32_TO_RIL(type);
     header[2] = GUINT32_TO_RIL(id);
     header[3] = GUINT32_TO_RIL(status);
     if (len) g_byte_array_append(server->write_data, data, len);
     if (grilio_test_server_ready_to_write(server)) {
         grilio_test_server_start_writing(server);
     }
+}
+
+void
+grilio_test_server_add_response_data(
+    GRilIoTestServer* server,
+    guint id,
+    guint status,
+    const void* data,
+    guint len)
+{
+    grilio_test_server_add_response_data_full(server,
+        RIL_PACKET_TYPE_SOLICITED, id, status, data, len);
 }
 
 void
@@ -333,6 +361,94 @@ grilio_test_server_add_response(
 {
     grilio_test_server_add_response_data(server, id, status,
         grilio_request_data(resp), grilio_request_size(resp));
+}
+
+void
+grilio_test_server_add_response_ack_exp_data(
+    GRilIoTestServer* server,
+    guint id,
+    guint status,
+    const void* data,
+    guint len)
+{
+    grilio_test_server_add_response_data_full(server,
+        RIL_PACKET_TYPE_SOLICITED_ACK_EXP, id, status, data, len);
+}
+
+void
+grilio_test_server_add_response_ack_exp(
+    GRilIoTestServer* server,
+    GRilIoRequest* resp,
+    guint id,
+    guint status)
+{
+    grilio_test_server_add_response_ack_exp_data(server, id, status,
+        grilio_request_data(resp), grilio_request_size(resp));
+}
+
+static
+void
+grilio_test_server_add_unsol_full(
+    GRilIoTestServer* server,
+    RIL_PACKET_TYPE type,
+    guint code,
+    const void* data,
+    guint len)
+{
+    guint32* header;
+    guint oldlen = server->write_data->len;
+    g_byte_array_set_size(server->write_data, oldlen +
+        4 + RIL_UNSOL_HEADER_SIZE);
+    header = (guint32*)(server->write_data->data + oldlen);
+    header[0] = GUINT32_TO_BE(len + RIL_UNSOL_HEADER_SIZE);
+    header[1] = GUINT32_TO_RIL(type);
+    header[2] = GUINT32_TO_RIL(code);
+    if (len) g_byte_array_append(server->write_data, data, len);
+    if (grilio_test_server_ready_to_write(server)) {
+        grilio_test_server_start_writing(server);
+    }
+}
+
+void
+grilio_test_server_add_unsol_data(
+    GRilIoTestServer* server,
+    guint code,
+    const void* data,
+    guint len)
+{
+    grilio_test_server_add_unsol_full(server,
+        RIL_PACKET_TYPE_UNSOLICITED, code, data, len);
+}
+
+void
+grilio_test_server_add_unsol(
+    GRilIoTestServer* server,
+    GRilIoRequest* req,
+    guint code)
+{
+    grilio_test_server_add_unsol_data(server, code,
+        grilio_request_data(req), grilio_request_size(req));
+}
+
+void
+grilio_test_server_add_unsol_ack_exp_data(
+    GRilIoTestServer* server,
+    guint code,
+    const void* data,
+    guint len)
+{
+    grilio_test_server_add_unsol_full(server,
+        RIL_PACKET_TYPE_UNSOLICITED_ACK_EXP, code, data, len);
+}
+
+void
+grilio_test_server_add_unsol_ack_exp(
+    GRilIoTestServer* server,
+    GRilIoRequest* req,
+    guint code)
+{
+    grilio_test_server_add_unsol_ack_exp_data(server, code,
+        grilio_request_data(req), grilio_request_size(req));
 }
 
 static

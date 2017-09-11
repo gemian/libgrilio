@@ -75,6 +75,12 @@ grilio_test_server_add_data(
     guint len);
 
 void
+grilio_test_server_add_ack(
+    GRilIoTestServer* server,
+    GRilIoRequest* req,
+    guint id);
+
+void
 grilio_test_server_add_response(
     GRilIoTestServer* server,
     GRilIoRequest* req,
@@ -88,6 +94,47 @@ grilio_test_server_add_response_data(
     guint status,
     const void* data,
     guint len);
+
+void
+grilio_test_server_add_response_ack_exp(
+    GRilIoTestServer* server,
+    GRilIoRequest* req,
+    guint id,
+    guint status);
+
+void
+grilio_test_server_add_response_ack_exp_data(
+    GRilIoTestServer* server,
+    guint id,
+    guint status,
+    const void* data,
+    guint len);
+
+void
+grilio_test_server_add_unsol_data(
+    GRilIoTestServer* server,
+    guint code,
+    const void* data,
+    guint len);
+
+void
+grilio_test_server_add_unsol(
+    GRilIoTestServer* server,
+    GRilIoRequest* req,
+    guint code);
+
+void
+grilio_test_server_add_unsol_ack_exp_data(
+    GRilIoTestServer* server,
+    guint code,
+    const void* data,
+    guint len);
+
+void
+grilio_test_server_add_unsol_ack_exp(
+    GRilIoTestServer* server,
+    GRilIoRequest* req,
+    guint code);
 
 void
 grilio_test_server_add_request_func(
