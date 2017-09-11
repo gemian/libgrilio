@@ -55,7 +55,10 @@ typedef enum grilio_transaction_state {
 typedef enum grilio_packet_type {
     GRILIO_PACKET_REQ,
     GRILIO_PACKET_RESP,
-    GRILIO_PACKET_UNSOL
+    GRILIO_PACKET_UNSOL,
+    GRILIO_PACKET_ACK,
+    GRILIO_PACKET_RESP_ACK_EXP,
+    GRILIO_PACKET_UNSOL_ACK_EXP
 } GRILIO_PACKET_TYPE;
 
 #define GRILIO_TIMEOUT_NONE     (0)     /* Infinite timeout */

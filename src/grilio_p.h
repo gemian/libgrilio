@@ -46,8 +46,19 @@
 #define RIL_RESPONSE_HEADER_SIZE (12)
 #define RIL_UNSOL_HEADER_SIZE (8)
 #define RIL_MIN_HEADER_SIZE RIL_UNSOL_HEADER_SIZE
-#define RIL_UNSOL_RIL_CONNECTED 1034
+
+#define RIL_RESPONSE_ACKNOWLEDGEMENT (800)
+#define RIL_UNSOL_RIL_CONNECTED (1034)
 #define RIL_E_SUCCESS (0)
+
+/* Packet types (first word of the payload) */
+typedef enum ril_packet_type {
+    RIL_PACKET_TYPE_SOLICITED = 0,
+    RIL_PACKET_TYPE_UNSOLICITED = 1,
+    RIL_PACKET_TYPE_SOLICITED_ACK = 2,
+    RIL_PACKET_TYPE_SOLICITED_ACK_EXP = 3,
+    RIL_PACKET_TYPE_UNSOLICITED_ACK_EXP = 4
+} RIL_PACKET_TYPE;
 
 /*
  * 12 bytes are reserved for the packet header:
@@ -68,7 +79,6 @@ struct grilio_request {
     int max_retries;
     int retry_count;
     guint retry_period;
-    gboolean blocking;
     GByteArray* bytes;
     GRilIoRequest* next;
     GRilIoRequest* qnext;
@@ -77,6 +87,11 @@ struct grilio_request {
     GRilIoChannelResponseFunc response;
     GDestroyNotify destroy;
     void* user_data;
+    gboolean flags;
+
+#define GRILIO_REQUEST_FLAG_BLOCKING    (0x01)
+#define GRILIO_REQUEST_FLAG_INTERNAL    (0x02)
+#define GRILIO_REQUEST_FLAG_NO_REPLY    (0x04)
 };
 
 void

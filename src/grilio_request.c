@@ -152,7 +152,7 @@ grilio_request_set_blocking(
     gboolean blocking)
 {
     if (G_LIKELY(req)) {
-        req->blocking = blocking;
+        req->flags |= GRILIO_REQUEST_FLAG_BLOCKING;
     }
 }
 
