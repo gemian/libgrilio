@@ -1143,9 +1143,9 @@ grilio_channel_new_socket(
 		GERR("Can't connect to RILD: %s", strerror(errno));
             }
             close(fd);
-	}
-    } else {
-        GERR("Can't create unix socket: %s", strerror(errno));
+        } else {
+            GERR("Can't create unix socket: %s", strerror(errno));
+        }
     }
     return NULL;
 }

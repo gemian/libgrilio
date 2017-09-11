@@ -973,8 +973,8 @@ void
 test_write_error1(
     void)
 {
-    /* grilio_channel_new_socket("/tmp" must fail */
-    g_assert(!grilio_channel_new_socket("/tmp", NULL));
+    g_assert(!grilio_channel_new_socket("/", NULL));
+    g_assert(!grilio_channel_new_socket(NULL, NULL));
     test_write_error("WriteError1", test_write_error1_connected);
 }
 
