@@ -1,3 +1,9 @@
+libgrilio (1.0.18) unstable; urgency=low
+
+  * Added support for new packet types (2, 3 and 4)
+
+ -- Slava Monich <slava.monich@jolla.com>  Mon, 11 Sep 2017 17:32:46 +0300
+
 libgrilio (1.0.17) unstable; urgency=low
 
   * Added grilio_channel_remove_all_handlers
