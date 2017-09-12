@@ -96,6 +96,21 @@ test_response_empty_ok(
 
 static
 void
+test_response_empty_ok_ack(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    grilio_test_server_add_ack(test->server, NULL, id);
+    grilio_test_server_add_response_ack_exp_data(test->server, id,
+        GRILIO_STATUS_OK, NULL, 0);
+}
+
+static
+void
 test_response_reflect_ok(
     guint code,
     guint id,
@@ -123,7 +138,6 @@ test_alloc(
     test->server = server;
     test->io = grilio_channel_new_fd(fd, "SUB1", FALSE);
     grilio_channel_set_name(test->io, "TEST");
-    grilio_channel_set_name(NULL, NULL); /* This one does nothing */
     test->log = grilio_channel_add_default_logger(test->io, GLOG_LEVEL_VERBOSE);
     if (!(test_opt.flags & TEST_FLAG_DEBUG)) {
         test->timeout_id = g_timeout_add_seconds(TEST_TIMEOUT,
@@ -334,11 +348,18 @@ test_basic(
     Test* test = test_new(Test, "Basic");
     GRilIoRequest* req = grilio_request_new();
     guint id, pending_event_count = 0;
+    guint32 invalid[3];
     gulong pending_id = grilio_channel_add_pending_changed_handler(test->io,
         test_basic_inc, &pending_event_count);
 
+    grilio_channel_set_name(test->io, "");
+    g_assert(!g_strcmp0(test->io->name, ""));
+    grilio_channel_set_name(test->io, NULL);
+    g_assert(!test->io->name);
+
     /* Test NULL resistance */
     g_assert(!grilio_request_retry_count(NULL));
+    grilio_channel_set_name(NULL, NULL);
     grilio_request_set_retry(NULL, 0, 0);
     grilio_request_set_retry_func(NULL, NULL);
     grilio_channel_set_timeout(NULL, 0);
@@ -375,6 +396,12 @@ test_basic(
     grilio_request_set_retry_func(req, NULL);
     g_assert(test_basic_response_ok(test->server, "IGNORE",
         grilio_channel_send_request(test->io, req, RIL_REQUEST_TEST)));
+
+    /* Invalid packet gets ignored */
+    invalid[0] = GUINT32_TO_BE(8);    /* Length */
+    invalid[1] = GUINT32_TO_RIL(99);  /* Invalid packet type */
+    invalid[2] = GUINT32_TO_RIL(0);   /* Just to make it larger enough */
+    grilio_test_server_add_data(test->server, invalid, sizeof(invalid));
 
     /* This one has a callback which will terminate the test */
     g_assert(test_basic_response_ok(test->server, BASIC_RESPONSE_TEST,
@@ -1042,7 +1069,7 @@ void
 test_short_packet(
     void)
 {
-    Test* test = test_new(Test, "EOF");
+    Test* test = test_new(Test, "ShortPacket");
     static char data[2] = {0xff, 0xff};
     guint32 pktlen = GINT32_TO_BE(sizeof(data));
     grilio_channel_add_error_handler(test->io, test_short_packet_handler, test);
@@ -1051,6 +1078,60 @@ test_short_packet(
     /* These two do nothing (but improve branch coverage): */
     grilio_channel_add_error_handler(NULL, test_short_packet_handler, NULL);
     grilio_channel_add_error_handler(test->io, NULL, NULL);
+    g_main_loop_run(test->loop);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * ShortResponse
+ *==========================================================================*/
+
+static
+void
+test_short_response_error(
+    GRilIoChannel* io,
+    const GError* error,
+    void* user_data)
+{
+    Test* test = user_data;
+    GDEBUG("%s", GERRMSG(error));
+    g_main_loop_quit(test->loop);
+}
+
+static
+void
+test_short_response(
+    void)
+{
+    Test* test = test_new(Test, "ShortResponse");
+    guint32 packet[4];
+    memset(packet, 0, sizeof(packet));
+    packet[0] = GUINT32_TO_BE(9); /* Has to be > 8 */
+    packet[1] = GUINT32_TO_RIL(RIL_PACKET_TYPE_SOLICITED);
+    grilio_channel_add_error_handler(test->io, test_short_response_error, test);
+    grilio_test_server_add_data(test->server, packet, sizeof(packet));
+    /* And wait for the connection to terminate */
+    g_main_loop_run(test->loop);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * ShortResponse2
+ *==========================================================================*/
+
+static
+void
+test_short_response2(
+    void)
+{
+    Test* test = test_new(Test, "ShortResponse2");
+    guint32 packet[4];
+    memset(packet, 0, sizeof(packet));
+    packet[0] = GUINT32_TO_BE(9); /* Has to be > 8 */
+    packet[1] = GUINT32_TO_RIL(RIL_PACKET_TYPE_SOLICITED_ACK_EXP);
+    grilio_channel_add_error_handler(test->io, test_short_response_error, test);
+    grilio_test_server_add_data(test->server, packet, sizeof(packet));
+    /* And wait for the connection to terminate */
     g_main_loop_run(test->loop);
     test_free(test);
 }
@@ -1169,24 +1250,12 @@ typedef struct test_handlers_data {
     Test test;
     int count1;
     int count2;
+    int ack_count;
     gulong next_event_id;
     gulong total_event_id;
     gulong id1[TEST_HANDLERS_COUNT];
     gulong id2[TEST_HANDLERS_COUNT];
 } TestHandlers;
-
-static
-void
-test_handlers_submit_event(
-    Test* test,
-    guint code)
-{
-    guint32 buf[3];
-    buf[0] = GUINT32_TO_BE(8);          /* Length */
-    buf[1] = GUINT32_TO_RIL(1);         /* Unsolicited Event */
-    buf[2] = GUINT32_TO_RIL(code);      /* Event code */
-    grilio_test_server_add_data(test->server, buf, sizeof(buf));
-}
 
 static void
 test_handlers_done(
@@ -1225,14 +1294,15 @@ test_handlers_remove(
 
     /* Submit more events. This time they should only increment count1 */
     for (i=0; i<TEST_HANDLERS_INC_EVENTS_COUNT; i++) {
-        test_handlers_submit_event(test, TEST_HANDLERS_INC_EVENT);
+        grilio_test_server_add_unsol(test->server, NULL,
+            TEST_HANDLERS_INC_EVENT);
     }
 
     /* Once those are handled, stop the test */
     grilio_channel_remove_handler(test->io, h->next_event_id);
     h->next_event_id = grilio_channel_add_unsol_event_handler(test->io,
         test_handlers_done, TEST_HANDLERS_DONE_EVENT, h);
-    test_handlers_submit_event(test, TEST_HANDLERS_DONE_EVENT);
+    grilio_test_server_add_unsol(test->server, NULL, TEST_HANDLERS_DONE_EVENT);
 }
 
 static void
@@ -1246,6 +1316,20 @@ test_handlers_inc(
     int* count = user_data;
     (*count)++;
     GDEBUG("Event %u data %p value %d", code, count, *count);
+}
+
+static
+void
+test_handlers_ack(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestHandlers* h = user_data;
+    h->ack_count++;
+    GDEBUG("Ack %d", h->ack_count);
 }
 
 static
@@ -1267,16 +1351,24 @@ test_handlers(
     h->total_event_id = grilio_channel_add_unsol_event_handler(test->io,
         test_handlers_inc, 0, &total);
     for (i=0; i<TEST_HANDLERS_INC_EVENTS_COUNT; i++) {
-        test_handlers_submit_event(test, TEST_HANDLERS_INC_EVENT);
+        grilio_test_server_add_unsol(test->server, NULL,
+            TEST_HANDLERS_INC_EVENT);
     }
+
+    /* libgrilio is supposed to ack TEST_HANDLERS_REMOVE_EVENT exactly once */
+    grilio_test_server_add_request_func(test->server,
+        RIL_RESPONSE_ACKNOWLEDGEMENT, test_handlers_ack, h);
+
     h->next_event_id = grilio_channel_add_unsol_event_handler(test->io,
         test_handlers_remove, TEST_HANDLERS_REMOVE_EVENT, h);
-    test_handlers_submit_event(test, TEST_HANDLERS_REMOVE_EVENT);
+    grilio_test_server_add_unsol_ack_exp(test->server, NULL,
+        TEST_HANDLERS_REMOVE_EVENT);
 
     /* Run the test */
     g_main_loop_run(test->loop);
 
     /* Check the final state */
+    g_assert(h->ack_count == 1);
     g_assert(h->count1 == 2*TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT);
     g_assert(h->count2 == TEST_HANDLERS_COUNT*TEST_HANDLERS_INC_EVENTS_COUNT);
     /* Total count includes RIL_UNSOL_RIL_CONNECTED + REMOVE and DONE */
@@ -2671,6 +2763,7 @@ test_block2(
 
 typedef struct test_block_timeout_data {
     Test test;
+    int req2_completed;
     GRilIoRequest* req1;
     GRilIoRequest* req2;
 } TestBlockTimeout;
@@ -2686,8 +2779,8 @@ test_block_timeout_req2_completed(
 {
     TestBlockTimeout* t = user_data;
     GDEBUG("Request 2 completion status %d", status);
+    t->req2_completed++;
     g_assert(status == GRILIO_STATUS_OK);
-    g_main_loop_quit(t->test.loop);
 }
 
 static
@@ -2707,6 +2800,19 @@ test_block_timeout_req1_completed(
 
 static
 void
+test_block_timeout_ack(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    g_main_loop_quit(test->loop);
+}
+
+static
+void
 test_block_timeout(
     void)
 {
@@ -2716,9 +2822,11 @@ test_block_timeout(
     t->req1 = grilio_request_new();
     t->req2 = grilio_request_new();
 
-    /* Reply to the second one, let the first one to time out */
+    /* Reply to the second one (and ack it), let the first one to time out */
+    grilio_test_server_add_request_func(test->server,
+        RIL_RESPONSE_ACKNOWLEDGEMENT, test_block_timeout_ack, test);
     grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_2,
-        test_response_empty_ok, test);
+        test_response_empty_ok_ack, test);
 
     grilio_request_set_blocking(t->req1, TRUE);
     grilio_request_set_timeout(t->req1, 10);
@@ -2730,6 +2838,7 @@ test_block_timeout(
     /* Run the test */
     g_main_loop_run(test->loop);
 
+    g_assert(t->req2_completed == 1);
     g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
     g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_DONE);
     grilio_request_unref(t->req1);
@@ -3028,6 +3137,8 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "WriteError3", test_write_error3);
     g_test_add_func(TEST_PREFIX "Disconnect", test_disconnect);
     g_test_add_func(TEST_PREFIX "ShortPacket", test_short_packet);
+    g_test_add_func(TEST_PREFIX "ShortResponse", test_short_response);
+    g_test_add_func(TEST_PREFIX "ShortResponse2", test_short_response2);
     g_test_add_func(TEST_PREFIX "Logger", test_logger);
     g_test_add_func(TEST_PREFIX "Handlers", test_handlers);
     g_test_add_func(TEST_PREFIX "EarlyResp", test_early_resp);
