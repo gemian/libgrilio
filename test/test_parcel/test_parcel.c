@@ -32,8 +32,7 @@
 
 #include "test_common.h"
 
-#include "grilio_request.h"
-#include "grilio_channel.h"
+#include "grilio_p.h"
 #include "grilio_parser.h"
 
 #include <gutil_log.h>
@@ -469,6 +468,26 @@ test_format(
 }
 
 /*==========================================================================*
+ * Flags
+ *==========================================================================*/
+
+static
+void
+test_flags(
+    void)
+{
+    GRilIoRequest* req = grilio_request_new();
+
+    g_assert(!(req->flags & GRILIO_REQUEST_FLAG_BLOCKING));
+    grilio_request_set_blocking(req, TRUE);
+    g_assert(req->flags & GRILIO_REQUEST_FLAG_BLOCKING);
+    grilio_request_set_blocking(req, FALSE);
+    g_assert(!(req->flags & GRILIO_REQUEST_FLAG_BLOCKING));
+
+    grilio_request_unref(req);
+}
+
+/*==========================================================================*
  * Common
  *==========================================================================*/
 
@@ -489,6 +508,7 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "ArrayUtf8", test_array_utf8);
     g_test_add_func(TEST_PREFIX "ArrayInt32", test_array_int32);
     g_test_add_func(TEST_PREFIX "Format", test_format);
+    g_test_add_func(TEST_PREFIX "Flags", test_flags);
     test_init(&test_opt, argc, argv);
     return g_test_run();
 }
