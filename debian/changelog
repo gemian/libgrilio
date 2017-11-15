@@ -1,3 +1,11 @@
+libgrilio (1.0.20) unstable; urgency=low
+
+  * Added grilio_parser_get_data
+  * Added grilio_parser_bytes_remaining
+  * Moved GRilIoParser typedef to grilio_types.h
+
+ -- Slava Monich <slava.monich@jolla.com>  Wed, 15 Nov 2017 16:47:55 +0200
+
 libgrilio (1.0.19) unstable; urgency=low
 
   * Fixed a bug in grilio_request_set_blocking
