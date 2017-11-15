@@ -488,6 +488,39 @@ test_flags(
 }
 
 /*==========================================================================*
+ * SubParser
+ *==========================================================================*/
+
+static
+void
+test_subparser(
+    void)
+{
+    GRilIoRequest* req = grilio_request_new();
+    GRilIoParser p1, p2;
+    gint32 i32 = 0;
+
+    grilio_request_append_int32(req, 1);
+    grilio_request_append_int32(req, 2);
+    test_parser_init_req(&p1, req);
+    g_assert(grilio_parser_bytes_remaining(&p1) == 8);
+    g_assert(grilio_parser_get_data(&p1, &p2, 4) == 4);
+
+    /* First int has been moved to p2 */
+    g_assert(grilio_parser_bytes_remaining(&p1) == 4);
+    g_assert(grilio_parser_bytes_remaining(&p2) == 4);
+    g_assert(grilio_parser_get_int32(&p1, &i32));
+    g_assert(i32 == 2);
+    g_assert(grilio_parser_get_int32(&p2, &i32));
+    g_assert(i32 == 1);
+    g_assert(grilio_parser_at_end(&p1));
+    g_assert(grilio_parser_at_end(&p2));
+    g_assert(!grilio_parser_get_data(&p1, &p2, 1));
+
+    grilio_request_unref(req);
+}
+
+/*==========================================================================*
  * Common
  *==========================================================================*/
 
@@ -509,6 +542,7 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "ArrayInt32", test_array_int32);
     g_test_add_func(TEST_PREFIX "Format", test_format);
     g_test_add_func(TEST_PREFIX "Flags", test_flags);
+    g_test_add_func(TEST_PREFIX "SubParser", test_subparser);
     test_init(&test_opt, argc, argv);
     return g_test_run();
 }

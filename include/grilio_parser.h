@@ -91,6 +91,16 @@ gboolean
 grilio_parser_skip_string(
     GRilIoParser* parser);
 
+gsize
+grilio_parser_bytes_remaining(
+    GRilIoParser* parser);
+
+gsize
+grilio_parser_get_data(
+    GRilIoParser* parser,
+    GRilIoParser* data,
+    gsize maxlen);
+
 G_END_DECLS
 
 #endif /* GRILIO_PARSER_H */

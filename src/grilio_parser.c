@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -191,6 +191,30 @@ grilio_parser_skip_string(
         }
     }
     return FALSE;
+}
+
+gsize
+grilio_parser_bytes_remaining(
+    GRilIoParser* parser)
+{
+    GRilIoParserPriv* p = grilio_parser_cast(parser);
+    return p->end - p->ptr;
+}
+
+gsize
+grilio_parser_get_data(
+    GRilIoParser* parser,
+    GRilIoParser* data,
+    gsize maxlen)
+{
+    GRilIoParserPriv* p = grilio_parser_cast(parser);
+    GRilIoParserPriv* pdata = grilio_parser_cast(data);
+    const gsize maxlen2 = p->end - p->ptr;
+    const gsize len = MIN(maxlen, maxlen2);
+    pdata->ptr = p->ptr;
+    pdata->end = pdata->ptr + len;
+    p->ptr += len;
+    return len;
 }
 
 /*
