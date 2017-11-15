@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Jolla Ltd.
+ * Copyright (C) 2015-2017 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -37,9 +37,9 @@
 
 G_BEGIN_DECLS
 
-typedef struct grilio_parser {
+struct grilio_parser {
     const void* d[4];
-} GRilIoParser;
+};
 
 void
 grilio_parser_init(

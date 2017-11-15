@@ -43,6 +43,7 @@ extern GLogModule GRILIO_LOG_MODULE;
 extern GLogModule GRILIO_HEXDUMP_LOG_MODULE;
 
 typedef struct grilio_channel GRilIoChannel;
+typedef struct grilio_parser GRilIoParser;
 typedef struct grilio_request GRilIoRequest;
 typedef struct grilio_queue GRilIoQueue;
 
