@@ -1,3 +1,9 @@
+libgrilio (1.0.21) unstable; urgency=low
+
+  * Added grilio_channel_inject_unsol_event.
+
+ -- Slava Monich <slava.monich@jolla.com>  Mon, 29 Jan 2018 15:51:19 +0200
+
 libgrilio (1.0.20) unstable; urgency=low
 
   * Added grilio_parser_get_data
