@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -385,6 +385,7 @@ test_basic(
     g_assert(!grilio_channel_get_request(NULL, 0));
     g_assert(!grilio_channel_get_request(test->io, 0));
     g_assert(!grilio_channel_get_request(test->io, INT_MAX));
+    grilio_channel_inject_unsol_event(NULL, 0, NULL, 0);
 
     /* Test send/cancel before we are connected to the server. */
     id = grilio_channel_send_request(test->io, NULL, 0);
@@ -412,6 +413,152 @@ test_basic(
     g_assert(pending_event_count > 0);
     grilio_channel_remove_handler(test->io, pending_id);
     grilio_request_unref(req);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Inject
+ *==========================================================================*/
+
+#define TEST_INJECT_EVENT1  (121)
+#define TEST_INJECT_EVENT2  (122)
+#define TEST_INJECT_EVENT3  (123)
+
+static const guint8 test_inject_data1[] = { 0x01 };
+static const guint8 test_inject_data2[] = { 0x01, 0x02 };
+static const guint8 test_inject_data3[] = { 0x01, 0x02, 0x03 };
+
+static
+void
+test_inject_count_cb(
+    GRilIoChannel* io,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    int* count = user_data;
+
+    (*count)++;
+    GDEBUG("Event %u count %d", code, *count);
+    g_assert(code == RIL_UNSOL_RIL_CONNECTED || code == TEST_INJECT_EVENT1 ||
+        code == TEST_INJECT_EVENT2 || code == TEST_INJECT_EVENT3);
+}
+
+static
+gboolean
+test_inject_done(
+    gpointer user_data)
+{
+    Test* test = user_data;
+
+    /* This two won't be processed */
+    grilio_channel_inject_unsol_event(test->io, TEST_INJECT_EVENT2, NULL, 0);
+    grilio_channel_inject_unsol_event(test->io, TEST_INJECT_EVENT3, NULL, 0);
+
+    /* Because we shutdown the channel and quit */
+    grilio_channel_shutdown(test->io, FALSE);
+    g_main_loop_quit(test->loop);
+    return G_SOURCE_REMOVE;
+}
+
+static
+void
+test_inject_event3_cb(
+    GRilIoChannel* io,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+
+    g_assert(io->connected);
+    g_assert(code == TEST_INJECT_EVENT3);
+    g_assert(len == sizeof(test_inject_data3));
+    g_assert(!memcmp(data, test_inject_data3, len));
+
+    g_idle_add(test_inject_done, test);
+}
+
+static
+gboolean
+test_inject_submit_event3_cb(
+    gpointer io)
+{
+    grilio_channel_inject_unsol_event(io, TEST_INJECT_EVENT3,
+        test_inject_data3, sizeof(test_inject_data3));
+    return G_SOURCE_REMOVE;
+}
+
+static
+void
+test_inject_event2_cb(
+    GRilIoChannel* io,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    g_assert(io->connected);
+    g_assert(code == TEST_INJECT_EVENT2);
+    g_assert(len == sizeof(test_inject_data2));
+    g_assert(!memcmp(data, test_inject_data2, len));
+
+    g_idle_add(test_inject_submit_event3_cb, io);
+}
+
+static
+void
+test_inject_event1_cb(
+    GRilIoChannel* io,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+
+    g_assert(io->connected);
+    g_assert(code == TEST_INJECT_EVENT1);
+    g_assert(len == sizeof(test_inject_data1));
+    g_assert(!memcmp(data, test_inject_data1, len));
+
+    /* This one will be processed without returning to the main loop */
+    grilio_channel_inject_unsol_event(test->io, TEST_INJECT_EVENT2,
+        test_inject_data2, sizeof(test_inject_data2));
+}
+
+static
+void
+test_inject(
+    void)
+{
+    Test* test = test_new(Test, "Inject");
+    int count = 0;
+    gulong id[4];
+
+    id[0] = grilio_channel_add_unsol_event_handler(test->io,
+        test_inject_count_cb, 0, &count);
+    id[1] = grilio_channel_add_unsol_event_handler(test->io,
+        test_inject_event1_cb, TEST_INJECT_EVENT1, test);
+    id[2] = grilio_channel_add_unsol_event_handler(test->io,
+        test_inject_event2_cb, TEST_INJECT_EVENT2, test);
+    id[3] = grilio_channel_add_unsol_event_handler(test->io,
+        test_inject_event3_cb, TEST_INJECT_EVENT3, test);
+
+    grilio_channel_inject_unsol_event(test->io, TEST_INJECT_EVENT1,
+        test_inject_data1, sizeof(test_inject_data1));
+
+    /* We are not connected yet: */
+    g_assert(!count);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    /* RIL_CONNECTED + 3 test events */
+    g_assert(count == 4);
+    grilio_channel_remove_all_handlers(test->io, id);
     test_free(test);
 }
 
@@ -1257,7 +1404,8 @@ typedef struct test_handlers_data {
     gulong id2[TEST_HANDLERS_COUNT];
 } TestHandlers;
 
-static void
+static
+void
 test_handlers_done(
     GRilIoChannel* io,
     guint code,
@@ -1270,7 +1418,8 @@ test_handlers_done(
     g_main_loop_quit(test->loop);
 }
 
-static void
+static
+void
 test_handlers_remove(
     GRilIoChannel* io,
     guint code,
@@ -1305,7 +1454,8 @@ test_handlers_remove(
     grilio_test_server_add_unsol(test->server, NULL, TEST_HANDLERS_DONE_EVENT);
 }
 
-static void
+static
+void
 test_handlers_inc(
     GRilIoChannel* io,
     guint code,
@@ -3129,6 +3279,7 @@ int main(int argc, char* argv[])
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_PREFIX "Connected", test_connected);
     g_test_add_func(TEST_PREFIX "Basic", test_basic);
+    g_test_add_func(TEST_PREFIX "Inject", test_inject);
     g_test_add_func(TEST_PREFIX "Queue", test_queue);
     g_test_add_func(TEST_PREFIX "Transaction1", test_transaction1);
     g_test_add_func(TEST_PREFIX "Transaction2", test_transaction2);
