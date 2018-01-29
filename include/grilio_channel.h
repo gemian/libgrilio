@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -244,6 +244,13 @@ void
 grilio_channel_drop_request(
     GRilIoChannel* channel,
     guint id);
+
+void
+grilio_channel_inject_unsol_event(
+    GRilIoChannel* self,
+    guint code,
+    const void* data,
+    guint len);
 
 G_END_DECLS
 

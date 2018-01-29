@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -43,6 +43,8 @@
 
 #define GRILIO_MAX_PACKET_LEN (0x8000)
 #define GRILIO_SUB_LEN (4)
+
+typedef struct grilio_channel_event GrilIoChannelEvent;
 
 /* Requests are considered pending for no longer than pending_timeout
  * because pending requests prevent blocking requests from being
@@ -106,6 +108,12 @@ struct grilio_channel_priv {
     guint read_buf_pos;
     guint read_buf_alloc;
     gchar* read_buf;
+
+    /* Injected events */
+    gboolean processing_injects;
+    guint process_injects_id;
+    GrilIoChannelEvent* first_inject;
+    GrilIoChannelEvent* last_inject;
 };
 
 typedef GObjectClass GRilIoChannelClass;
@@ -135,6 +143,13 @@ enum grilio_channel_signal {
 #define SIGNAL_UNSOL_EVENT_DETAIL_MAX_LENGTH    (8)
 
 static guint grilio_channel_signals[SIGNAL_COUNT] = { 0 };
+
+struct grilio_channel_event {
+    GrilIoChannelEvent* next;
+    guint code;
+    void* data;
+    guint len;
+};
 
 typedef struct grilio_channel_logger {
     int id;
@@ -1020,6 +1035,83 @@ grilio_channel_handle_response(
 
 static
 void
+grilio_channel_emit_unsol_event(
+    GRilIoChannel* self,
+    guint code,
+    const void* data,
+    guint len)
+{
+    GQuark detail;
+    char signame[SIGNAL_UNSOL_EVENT_DETAIL_MAX_LENGTH + 1];
+
+    /* We should be connected when we are doing this */
+    GASSERT(self->connected);
+
+    /* Event code is the detail */
+    snprintf(signame, sizeof(signame), SIGNAL_UNSOL_EVENT_DETAIL_FORMAT, code);
+    detail = g_quark_from_string(signame);
+    g_signal_emit(self, grilio_channel_signals[SIGNAL_UNSOL_EVENT],
+        detail, code, data, len);
+}
+
+static
+void
+grilio_channel_process_injects(
+    GRilIoChannel* self)
+{
+    GRilIoChannelPriv* priv = self->priv;
+
+    GASSERT(!priv->processing_injects);
+    priv->processing_injects = TRUE;
+
+    while (priv->first_inject) {
+        GrilIoChannelEvent* e = priv->first_inject;
+        priv->first_inject = e->next;
+        if (!priv->first_inject) {
+            priv->last_inject = NULL;
+        }
+        GDEBUG("Injecting event %u, %u byte(s)", e->code, e->len);
+        grilio_channel_emit_unsol_event(self, e->code, e->data, e->len);
+        g_free(e->data);
+        g_slice_free(GrilIoChannelEvent, e);
+    }
+
+    priv->processing_injects = FALSE;
+}
+
+static
+gboolean
+grilio_channel_process_injects_cb(
+    gpointer user_data)
+{
+    GRilIoChannel* self = GRILIO_CHANNEL(user_data);
+    GRilIoChannelPriv* priv = self->priv;
+
+    GASSERT(priv->process_injects_id);
+    priv->process_injects_id = 0;
+    grilio_channel_process_injects(self);
+    return G_SOURCE_REMOVE;
+}
+
+static
+void
+grilio_drop_pending_injects(
+    GRilIoChannelPriv* priv)
+{
+    if (priv->process_injects_id) {
+        g_source_remove(priv->process_injects_id);
+        priv->process_injects_id = 0;
+    }
+    if (priv->first_inject) {
+        GrilIoChannelEvent* e;
+        for (e = priv->first_inject; e; e = e->next) g_free(e->data);
+        g_slice_free_chain(GrilIoChannelEvent, priv->first_inject, next);
+        priv->first_inject = priv->last_inject = NULL;
+    }
+}
+
+static
+void
 grilio_channel_handle_unsol(
     GRilIoChannel* self,
     GRILIO_PACKET_TYPE type)
@@ -1028,12 +1120,6 @@ grilio_channel_handle_unsol(
     GRilIoChannelPriv* priv = self->priv;
     const guint32* buf = (guint32*)priv->read_buf;
     const guint32 code = GUINT32_FROM_RIL(buf[1]);
-
-    /* Event code is the detail */
-    GQuark detail;
-    char signame[SIGNAL_UNSOL_EVENT_DETAIL_MAX_LENGTH + 1];
-    snprintf(signame, sizeof(signame), SIGNAL_UNSOL_EVENT_DETAIL_FORMAT, code);
-    detail = g_quark_from_string(signame);
 
     /* Loggers get the whole thing except the length */
     grilio_channel_log(self, type, 0, code, priv->read_buf, priv->read_len);
@@ -1044,9 +1130,14 @@ grilio_channel_handle_unsol(
     }
 
     /* Event handler gets event code and the data separately */
-    g_signal_emit(self, grilio_channel_signals[SIGNAL_UNSOL_EVENT],
-        detail, code, priv->read_buf + RIL_UNSOL_HEADER_SIZE,
+    grilio_channel_emit_unsol_event(self, code,
+        priv->read_buf + RIL_UNSOL_HEADER_SIZE,
         priv->read_len - RIL_UNSOL_HEADER_SIZE);
+
+    /* If connected has become TRUE, flush the inject queue */
+    if (code == RIL_UNSOL_RIL_CONNECTED && self->connected) {
+        grilio_channel_process_injects(self);
+    }
 }
 
 static
@@ -1359,6 +1450,7 @@ grilio_channel_shutdown(
         }
         self->connected = FALSE;
         self->ril_version = 0;
+        grilio_drop_pending_injects(priv);
     }
 }
 
@@ -2024,6 +2116,47 @@ grilio_channel_drop_request(
     }
 }
 
+/**
+ * Queues an unsolicited event as if it arrived from rild. No socket
+ * communication is involed, it's a purely local action. Loggers don't
+ * see it either (should they?).
+ *
+ * Since 1.0.21
+ */
+void
+grilio_channel_inject_unsol_event(
+    GRilIoChannel* self,
+    guint code,
+    const void* data,
+    guint len)
+{
+    if (G_LIKELY(self)) {
+        GRilIoChannelPriv* priv = self->priv;
+        GrilIoChannelEvent* e = g_slice_new0(GrilIoChannelEvent);
+
+        e->code = code;
+        e->data = g_memdup(data, len);
+        e->len = len;
+
+        /* Queue the event */
+        if (priv->last_inject) {
+            priv->last_inject->next = e;
+            priv->last_inject = e;
+        } else {
+            GASSERT(!priv->first_inject);
+            priv->first_inject = priv->last_inject = e;
+        }
+
+        /* And schedule the callback if necessary */
+        if (self->connected &&
+            !priv->process_injects_id &&
+            !priv->processing_injects) {
+            priv->process_injects_id =
+                g_idle_add(grilio_channel_process_injects_cb, self);
+        }
+    }
+}
+
 /*==========================================================================*
  * Internals
  *==========================================================================*/
@@ -2087,6 +2220,9 @@ grilio_channel_finalize(
 {
     GRilIoChannel* self = GRILIO_CHANNEL(object);
     GRilIoChannelPriv* priv = self->priv;
+    GASSERT(!priv->first_inject);
+    GASSERT(!priv->last_inject);
+    GASSERT(!priv->process_injects_id);
     GASSERT(!priv->timeout_id);
     GASSERT(!priv->read_watch_id);
     GASSERT(!priv->write_watch_id);
