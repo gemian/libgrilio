@@ -35,6 +35,8 @@
 
 #include "grilio_types.h"
 
+#include <glib-object.h>
+
 G_BEGIN_DECLS
 
 typedef struct grilio_channel_priv GRilIoChannelPriv;
