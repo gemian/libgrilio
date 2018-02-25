@@ -1,3 +1,9 @@
+libgrilio (1.0.22) unstable; urgency=low
+
+  * Explicitely include glib-object.h where it's needed
+
+ -- Slava Monich <slava.monich@jolla.com>  Sun, 25 Feb 2018 13:20:49 +0200
+
 libgrilio (1.0.21) unstable; urgency=low
 
   * Added grilio_channel_inject_unsol_event.
