@@ -64,6 +64,8 @@ struct grilio_channel_priv {
     GIOChannel* io_channel;
     guint read_watch_id;
     guint write_watch_id;
+    guint write_error_id;
+    GError* write_error;
     guint last_req_id;
     guint last_logger_id;
     GHashTable* req_table;
@@ -156,11 +158,6 @@ typedef struct grilio_channel_logger {
     GrilIoChannelLogFunc log;
     void* user_data;
 } GrilIoChannelLogger;
-
-typedef enum grilio_channel_error_type {
-    GRILIO_ERROR_READ,
-    GRILIO_ERROR_WRITE
-} GRILIO_ERROR_TYPE;
 
 static
 gboolean
@@ -431,22 +428,62 @@ grilio_channel_remove_request(
 }
 
 static
+gboolean
+grilio_channel_write_error_cb(
+    gpointer user_data)
+{
+    GRilIoChannel* self = GRILIO_CHANNEL(user_data);
+    GRilIoChannelPriv* priv = self->priv;
+    GError* error = priv->write_error;
+
+    GASSERT(priv->write_error_id);
+    priv->write_error_id = 0;
+    priv->write_error = NULL;
+    g_signal_emit(self, grilio_channel_signals[SIGNAL_ERROR], 0, error);
+    g_error_free(error);
+    return G_SOURCE_REMOVE;
+}
+
+static
 void
-grilio_channel_handle_error(
+grilio_channel_handle_write_error(
     GRilIoChannel* self,
-    GRILIO_ERROR_TYPE type,
     GError* error)
 {
-    GERR("%s %s failed: %s", self->name, (type == GRILIO_ERROR_READ) ?
-         "read" : "write", error->message);
-    /* Zero watch ids because we're going to return FALSE from the callback */
-    if (type == GRILIO_ERROR_READ) {
-        self->priv->read_watch_id = 0;
-    } else {
-        GASSERT(type == GRILIO_ERROR_WRITE);
-        self->priv->write_watch_id = 0;
-    }
+    GRilIoChannelPriv* priv = self->priv;
+
+    GERR("%s write failed: %s", self->name, GERRMSG(error));
     grilio_channel_shutdown(self, FALSE);
+
+    /* It's dangerous to emit write error signal right away. The signal
+     * handler may release the last reference to the caller. We should
+     * emit the signal on a fresh stack */
+    if (priv->write_error) {
+        g_error_free(priv->write_error);
+    }
+    /* grilio_channel_handle_write_error_cb will free the error */
+    priv->write_error = error;
+    if (!priv->write_error_id) {
+        priv->write_error_id = g_idle_add(grilio_channel_write_error_cb, self);
+    }
+
+    /* Zero watch ids because we're going to return FALSE from the callback */
+    priv->write_watch_id = 0;
+}
+
+static
+void
+grilio_channel_handle_read_error(
+    GRilIoChannel* self,
+    GError* error)
+{
+    GRilIoChannelPriv* priv = self->priv;
+
+    GERR("%s read failed: %s", self->name, GERRMSG(error));
+    grilio_channel_shutdown(self, FALSE);
+
+    /* Zero watch ids because we're going to return FALSE from the callback */
+    priv->read_watch_id = 0;
     g_signal_emit(self, grilio_channel_signals[SIGNAL_ERROR], 0, error);
     g_error_free(error);
 }
@@ -748,7 +785,7 @@ grilio_channel_write(
         g_io_channel_write_chars(priv->io_channel, priv->sub + priv->sub_pos,
             GRILIO_SUB_LEN - priv->sub_pos, &bytes_written, &error);
         if (error) {
-            grilio_channel_handle_error(self, GRILIO_ERROR_WRITE, error);
+            grilio_channel_handle_write_error(self, error);
             return FALSE;
         }
         priv->sub_pos += bytes_written;
@@ -807,7 +844,7 @@ grilio_channel_write(
             req->bytes->len - priv->send_pos,
             &bytes_written, &error);
         if (error) {
-            grilio_channel_handle_error(self, GRILIO_ERROR_WRITE, error);
+            grilio_channel_handle_write_error(self, error);
             return FALSE;
         }
         priv->send_pos += bytes_written;
@@ -955,20 +992,18 @@ grilio_channel_connected(
 
 static
 void
-grilio_channel_send_ack(
+grilio_channel_queue_ack(
      GRilIoChannel* self)
 {
     GRilIoChannelPriv* priv = self->priv;
     GRilIoRequest* req = grilio_request_new();
     req->id = req->current_id = grilio_channel_generate_req_id(priv);
     req->code = RIL_RESPONSE_ACKNOWLEDGEMENT;
-    /* These packets are not subject to serialization and expects no reply */
+    /* These packets are not subject to serialization and expect no reply */
     req->flags |= GRILIO_REQUEST_FLAG_INTERNAL | GRILIO_REQUEST_FLAG_NO_REPLY;
     g_hash_table_insert(priv->req_table, GINT_TO_POINTER(req->id),
         grilio_request_ref(req));
-    grilio_channel_queue_request(priv, grilio_request_ref(req));
-    grilio_channel_schedule_write(self);
-    grilio_request_unref(req);
+    grilio_channel_queue_request(priv, req);
 }
 
 static
@@ -1150,9 +1185,9 @@ grilio_channel_handle_solicited(
         grilio_channel_handle_response(self, GRILIO_PACKET_RESP);
         return TRUE;
     } else {
-        grilio_channel_handle_error(self, GRILIO_ERROR_READ,
-            g_error_new(G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "Response too short (%u bytes)", priv->read_len));
+        grilio_channel_handle_read_error(self, g_error_new(G_IO_ERROR,
+            G_IO_ERROR_INVALID_DATA, "Response too short (%u bytes)",
+            priv->read_len));
         return FALSE;
     }
 }
@@ -1191,13 +1226,14 @@ grilio_channel_handle_solicited_ack_exp(
 {
     GRilIoChannelPriv* priv = self->priv;
     if (priv->read_len >= RIL_RESPONSE_HEADER_SIZE) {
+        grilio_channel_queue_ack(self);
         grilio_channel_handle_response(self, GRILIO_PACKET_RESP_ACK_EXP);
-        grilio_channel_send_ack(self);
+        grilio_channel_schedule_write(self);
         return TRUE;
     } else {
-        grilio_channel_handle_error(self, GRILIO_ERROR_READ,
-            g_error_new(G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "Response too short (%u bytes)", priv->read_len));
+        grilio_channel_handle_read_error(self, g_error_new(G_IO_ERROR,
+            G_IO_ERROR_INVALID_DATA, "Response too short (%u bytes)",
+            priv->read_len));
         return FALSE;
     }
 }
@@ -1207,8 +1243,9 @@ gboolean
 grilio_channel_handle_unsolicited_ack_exp(
     GRilIoChannel* self)
 {
+    grilio_channel_queue_ack(self);
     grilio_channel_handle_unsol(self, GRILIO_PACKET_UNSOL_ACK_EXP);
-    grilio_channel_send_ack(self);
+    grilio_channel_schedule_write(self);
     return TRUE;
 }
 
@@ -1238,9 +1275,9 @@ grilio_channel_handle_packet(
             return TRUE;
         }
     } else {
-        grilio_channel_handle_error(self, GRILIO_ERROR_READ,
-            g_error_new(G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "Packet too short (%u bytes)", priv->read_len));
+        grilio_channel_handle_read_error(self, g_error_new(G_IO_ERROR,
+            G_IO_ERROR_INVALID_DATA, "Packet too short (%u bytes)",
+            priv->read_len));
         return FALSE;
     }
 }
@@ -1257,7 +1294,7 @@ grilio_channel_read_chars(
     GIOStatus status = g_io_channel_read_chars(self->priv->io_channel, buf,
         count, bytes_read, &error);
     if (error) {
-        grilio_channel_handle_error(self, GRILIO_ERROR_READ, error);
+        grilio_channel_handle_read_error(self, error);
         return FALSE;
     } else if (status == G_IO_STATUS_EOF) {
         grilio_channel_handle_eof(self);
@@ -2230,6 +2267,12 @@ grilio_channel_finalize(
     GASSERT(!priv->block_ids);
     if (priv->pending_timeout_id) {
         g_source_remove(priv->pending_timeout_id);
+    }
+    if (priv->write_error_id) {
+        g_source_remove(priv->write_error_id);
+    }
+    if (priv->write_error) {
+        g_error_free(priv->write_error);
     }
     g_free(priv->name);
     g_free(priv->log_prefix);
