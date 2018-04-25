@@ -1,3 +1,9 @@
+libgrilio (1.0.24) unstable; urgency=low
+
+  * Tweaked timeout logic
+
+ -- Slava Monich <slava.monich@jolla.com>  Thu, 26 Apr 2018 00:19:05 +0300
+
 libgrilio (1.0.23) unstable; urgency=low
 
   * Emit write error signals on a fresh stack
