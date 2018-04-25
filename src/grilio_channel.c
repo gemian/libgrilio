@@ -542,9 +542,8 @@ grilio_channel_pending_deadline(
     GRilIoChannelPriv* priv,
     GRilIoRequest* req)
 {
-    const int req_timeout = (req->timeout > 0 &&
-        req->timeout <= priv->pending_timeout) ?
-        req->timeout : priv->pending_timeout;
+    const int req_timeout = (req->timeout > 0) ? req->timeout :
+        priv->pending_timeout;
     GASSERT(req->submitted);
     return req->submitted + MICROSEC(req_timeout);
 }
