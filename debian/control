@@ -3,8 +3,10 @@ Section: libs
 Priority: optional
 Maintainer: Adam Boardman <adamboardman@gmail.com>
 XSBC-Original-Maintainer: Slava Monich <slava.monich@jolla.com>
-Build-Depends: debhelper (>= 7), libglib2.0-dev (>= 2.0)
-Standards-Version: 3.8.4
+Build-Depends: debhelper,
+               libglib2.0-dev,
+               libglibutil-dev,
+Standards-Version: 4.1.1
 
 Package: libgrilio
 Section: libs
