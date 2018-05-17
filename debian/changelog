@@ -1,3 +1,9 @@
+libgrilio (1.0.24+gemian) buster; urgency=medium
+
+  * Branched for Gemian
+
+ -- Adam Boardman <adamboardman@gmail.com>  Thu, 17 May 2018 16:25:48 +0100
+
 libgrilio (1.0.24) unstable; urgency=low
 
   * Tweaked timeout logic
