@@ -10,7 +10,7 @@ Package: libgrilio
 Section: libs
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: Library of glib utilities
+Description: RIL client library
 
 Package: libgrilio-dev
 Section: libdevel
