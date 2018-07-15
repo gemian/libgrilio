@@ -130,6 +130,11 @@ guint
 grilio_request_id(
     GRilIoRequest* request);
 
+/* Since 1.0.25 */
+guint
+grilio_request_serial(
+    GRilIoRequest* request);
+
 /* Building the request */
 
 void

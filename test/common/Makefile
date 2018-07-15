@@ -125,12 +125,14 @@ debug: lib-debug $(DEBUG_EXE)
 
 release: lib-release $(RELEASE_EXE)
 
-clean:
+clean: unitclean
+
+cleaner: unitclean
+	@make -C $(LIB_DIR) clean
+
+unitclean:
 	rm -f *~
 	rm -fr $(BUILD_DIR)
-
-cleaner: clean
-	@make -C $(LIB_DIR) clean
 
 test_banner:
 	@echo "===========" $(EXE) "=========== "

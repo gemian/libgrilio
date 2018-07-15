@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -81,7 +81,7 @@ gboolean
 grilio_test_server_ready_to_write(
     GRilIoTestServer* server)
 {
-    return (server->sub_len == 4);
+    return (server->sub_len == sizeof(server->sub));
 }
 
 static
@@ -149,19 +149,23 @@ grilio_test_server_read(
 {
     GError* error = NULL;
     gsize bytes_read;
-    if (server->sub_len < 4) {
+    if (server->sub_len < sizeof(server->sub)) {
         bytes_read = 0;
-        g_io_channel_read_chars(server->io_channel,
+        if (g_io_channel_read_chars(server->io_channel,
             server->sub + server->sub_len,
-            4 - server->sub_len, &bytes_read, &error);
-        if (error) {
-            GERR("%s", GERRMSG(error));
-            g_error_free(error);
+            sizeof(server->sub) - server->sub_len,
+            &bytes_read, &error) != G_IO_STATUS_NORMAL) {
+            if (error) {
+                GERR("%s", GERRMSG(error));
+                g_error_free(error);
+            } else {
+                GERR("EOF?");
+            }
             return FALSE;
         }
         GVERBOSE("Received %lu bytes", (unsigned long)bytes_read);
         server->sub_len += bytes_read;
-        if (server->sub_len == 4) {
+        if (server->sub_len == sizeof(server->sub)) {
             GDEBUG("Subscription %.4s", server->sub);
             grilio_test_server_start_writing(server);
         } else {
@@ -179,16 +183,16 @@ grilio_test_server_read(
     if (bytes_read) {
         GVERBOSE("Received %lu bytes", (unsigned long)bytes_read);
         g_byte_array_append(server->read_buf, (void*)server->buf, bytes_read);
-        if (server->read_buf->len > 4) {
+        while (server->read_buf->len > 4) {
             const guint32* header = (guint32*)server->read_buf->data;
             const guint32 len = GUINT32_FROM_BE(header[0]);
             GASSERT(len >= 8);
             if (server->read_buf->len >= len + 4) {
                 const guint32 code = GUINT32_FROM_RIL(header[1]);
                 const guint32 id = GUINT32_FROM_RIL(header[2]);
-                const guint32 data_len = len - 8;
+                const guint32 data_len = len - RIL_REQUEST_HEADER_SIZE;
                 const void* data = server->read_buf->data +
-                    RIL_REQUEST_HEADER_SIZE;
+                    (4 + RIL_REQUEST_HEADER_SIZE);
                 GDEBUG("Request %u, id=%u, len=%u", code, id, data_len);
                 grilio_test_server_call_handlers(server->handlers, code, id,
                     data, data_len);
@@ -198,6 +202,8 @@ grilio_test_server_read(
                         id, data, data_len);
                 }
                 g_byte_array_remove_range(server->read_buf, 0, len + 4);
+            } else {
+                break;
             }
         }
     }
@@ -214,7 +220,7 @@ grilio_test_server_read_callback(
     GRilIoTestServer* server = data;
     gboolean ok = (condition & G_IO_IN) && grilio_test_server_read(server);
     if (!ok) server->read_watch_id = 0;
-    return TRUE;
+    return ok;
 }
 
 static
@@ -231,13 +237,15 @@ grilio_test_server_write_callback(
 }
 
 GRilIoTestServer*
-grilio_test_server_new()
+grilio_test_server_new(
+    gboolean expect_sub)
 {
     GRilIoTestServer* server = g_new0(GRilIoTestServer, 1);
     socketpair(AF_UNIX, SOCK_STREAM, 0, server->fd);
     server->io_channel = g_io_channel_unix_new(server->server_fd);
     server->read_buf = g_byte_array_new();
     server->write_data = g_byte_array_new();
+    if (!expect_sub) server->sub_len = sizeof(server->sub);
     g_byte_array_append(server->write_data, UNSOL_RIL_CONNECTED,
         sizeof(UNSOL_RIL_CONNECTED));
     g_io_channel_set_flags(server->io_channel, G_IO_FLAG_NONBLOCK, NULL);
@@ -305,11 +313,10 @@ grilio_test_server_add_data(
 void
 grilio_test_server_add_ack(
     GRilIoTestServer* server,
-    GRilIoRequest* req,
     guint id)
 {
     guint32 ack[3];
-    ack[0] = GUINT32_TO_BE(8);
+    ack[0] = GUINT32_TO_BE(RIL_ACK_HEADER_SIZE);
     ack[1] = GUINT32_TO_RIL(RIL_PACKET_TYPE_SOLICITED_ACK);
     ack[2] = GUINT32_TO_RIL(id);
     grilio_test_server_add_data(server, ack, sizeof(ack));

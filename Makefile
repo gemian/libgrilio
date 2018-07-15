@@ -1,6 +1,6 @@
 # -*- Mode: makefile-gmake -*-
 
-.PHONY: clean all debug release pkgconfig
+.PHONY: clean test all debug release pkgconfig
 .PHONY: print_debug_lib print_release_lib
 .PHONY: print_debug_link print_release_link
 .PHONY: print_debug_path print_release_path
@@ -46,9 +46,12 @@ LIB = $(LIB_SONAME).$(VERSION_MINOR).$(VERSION_RELEASE)
 
 SRC = \
   grilio_channel.c \
+  grilio_encode.c \
   grilio_hexdump.c \
   grilio_request.c \
   grilio_parser.c \
+  grilio_transport.c \
+  grilio_transport_socket.c \
   grilio_queue.c
 
 #
@@ -160,11 +163,15 @@ print_release_path:
 	@echo $(RELEASE_BUILD_DIR)
 
 clean:
+	make -C test clean
 	rm -f *~ $(SRC_DIR)/*~ $(INCLUDE_DIR)/*~ rpm/*~
 	rm -fr $(BUILD_DIR) RPMS installroot
 	rm -fr debian/tmp debian/libgrilio debian/libgrilio-dev
 	rm -f documentation.list debian/files debian/*.substvars
 	rm -f debian/*.debhelper.log debian/*.debhelper debian/*~
+
+test:
+	make -C test test
 
 $(DEBUG_BUILD_DIR):
 	mkdir -p $@

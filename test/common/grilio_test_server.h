@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -49,7 +49,8 @@ void
     void* user_data);
 
 GRilIoTestServer*
-grilio_test_server_new();
+grilio_test_server_new(
+    gboolean expect_sub);
 
 void
 grilio_test_server_free(
@@ -77,7 +78,6 @@ grilio_test_server_add_data(
 void
 grilio_test_server_add_ack(
     GRilIoTestServer* server,
-    GRilIoRequest* req,
     guint id);
 
 void

@@ -98,6 +98,10 @@ void
     void* user_data);
 
 GRilIoChannel*
+grilio_channel_new(
+    GRilIoTransport* transport);
+
+GRilIoChannel*
 grilio_channel_new_socket(
     const char* path,
     const char* subscription);
@@ -146,6 +150,18 @@ grilio_channel_has_pending_requests(
 
 guint
 grilio_channel_add_logger(
+    GRilIoChannel* channel,
+    GrilIoChannelLogFunc log,
+    void* user_data);
+
+/*
+ * Logger callbacks registered with grilio_channel_add_logger2 only receive
+ * packet payload, without the header. It's more efficient.
+ *
+ * Since 1.0.25
+ */
+guint
+grilio_channel_add_logger2(
     GRilIoChannel* channel,
     GrilIoChannelLogFunc log,
     void* user_data);

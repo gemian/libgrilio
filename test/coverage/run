@@ -3,7 +3,13 @@
 # This script requires lcov to be installed
 #
 
-TESTS="test_parcel test_io"
+TESTS="\
+ test_encode \
+ test_io \
+ test_parcel \
+ test_request \
+ test_transport"
+
 FLAVOR="release"
 
 function require() {
@@ -44,4 +50,4 @@ GRILIO_COV="$COV_DIR/libgrilio.gcov"
 rm -f "$FULL_COV" "$GRILIO_COV"
 lcov $LCOV_OPT -c -d "$LD_LIBRARY_PATH" -b "$BASE_DIR" -o "$FULL_COV" || exit 1
 lcov $LCOV_OPT -e "$FULL_COV" "$BASE_DIR/src/*" -o "$GRILIO_COV" || exit 1
-genhtml $GENHTML_OPT -t libgrilio "$GRILIO_COV" --output-directory "$COV_DIR/results" || exit 1
+genhtml $GENHTML_OPT -t libgrilio "$GRILIO_COV" --output-directory "$COV_DIR/report" || exit 1
