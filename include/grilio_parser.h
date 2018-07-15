@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -78,14 +78,21 @@ grilio_parser_get_uint32_array(
     guint32* values,
     guint count);
 
+gboolean
+grilio_parser_get_nullable_utf8(
+    GRilIoParser* parser,
+    char** str);
+
 char*
 grilio_parser_get_utf8(
-    GRilIoParser* parser);
+    GRilIoParser* parser)
+    G_GNUC_WARN_UNUSED_RESULT;
 
 char**
 grilio_parser_split_utf8(
     GRilIoParser* parser,
-    const gchar* delimiter);
+    const gchar* delimiter)
+    G_GNUC_WARN_UNUSED_RESULT;
 
 gboolean
 grilio_parser_skip_string(

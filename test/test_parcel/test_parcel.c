@@ -208,6 +208,8 @@ test_strings(
     test_parser_init_req(&parser, req);
 
     for (i=0; i<G_N_ELEMENTS(test_string); i++) {
+        GRilIoParser parser2 = parser;
+        g_assert(grilio_parser_get_nullable_utf8(&parser2, NULL));
         decoded[i] = grilio_parser_get_utf8(&parser);
     }
 
