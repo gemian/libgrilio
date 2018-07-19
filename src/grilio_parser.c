@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -133,9 +133,10 @@ grilio_parser_get_uint32_array(
     return TRUE;
 }
 
-char*
-grilio_parser_get_utf8(
-    GRilIoParser* parser)
+gboolean
+grilio_parser_get_nullable_utf8(
+    GRilIoParser* parser,
+    char** out)
 {
     GRilIoParserPriv* p = grilio_parser_cast(parser);
     if ((p->ptr + 4) <= p->end) {
@@ -144,16 +145,32 @@ grilio_parser_get_utf8(
         if (len == -1) {
             /* NULL string */
             p->ptr += 4;
+            if (out) {
+                *out = NULL;
+            }
+            return TRUE;
         } else if (len >= 0) {
             const guint32 padded_len = G_ALIGN4((len+1)*2);
             if ((p->ptr + padded_len + 4) <= p->end) {
                 const gunichar2* utf16 = (const gunichar2*)(p->ptr + 4);
                 p->ptr += padded_len + 4;
-                return g_utf16_to_utf8(utf16, len, NULL, NULL, NULL);
+                if (out) {
+                    *out = g_utf16_to_utf8(utf16, len, NULL, NULL, NULL);
+                }
+                return TRUE;
             }
         }
     }
-    return NULL;
+    return FALSE;
+}
+
+char*
+grilio_parser_get_utf8(
+    GRilIoParser* parser)
+{
+    char* str = NULL;
+    grilio_parser_get_nullable_utf8(parser, &str);
+    return str;
 }
 
 char**

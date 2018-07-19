@@ -1,7 +1,7 @@
 *~
 test/coverage/full.gcov
 test/coverage/libgrilio.gcov
-test/coverage/results
+test/coverage/report
 debian/files
 debian/libgrilio
 debian/libgrilio-dev

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -41,11 +41,12 @@
 #define GUINT32_FROM_RIL(x) (x) /* GUINT32_FROM_LE(x) ? */
 #define GUINT32_TO_RIL(x)   (x) /* GUINT32_TO_LE(x) ? */
 
-/* RIL constants */
-#define RIL_REQUEST_HEADER_SIZE (12)
-#define RIL_RESPONSE_HEADER_SIZE (12)
-#define RIL_UNSOL_HEADER_SIZE (8)
-#define RIL_MIN_HEADER_SIZE RIL_UNSOL_HEADER_SIZE
+/* RIL constants (for legacy loggers and socket transport) */
+#define RIL_REQUEST_HEADER_SIZE (8)    /* code, id */
+#define RIL_RESPONSE_HEADER_SIZE (12)  /* type, id, status */
+#define RIL_ACK_HEADER_SIZE (8)        /* type, id */
+#define RIL_UNSOL_HEADER_SIZE (8)      /* type, code */
+#define RIL_MAX_HEADER_SIZE (12)
 
 #define RIL_RESPONSE_ACKNOWLEDGEMENT (800)
 #define RIL_UNSOL_RIL_CONNECTED (1034)
