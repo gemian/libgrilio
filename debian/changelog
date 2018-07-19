@@ -1,3 +1,13 @@
+libgrilio (1.0.25) unstable; urgency=low
+
+  * Introduced GRilIoTransport interface
+  * Added grilio_parser_get_nullable_utf8
+  * Added grilio_channel_add_logger2
+  * Added grilio_request_serial
+  * Added grilio_encode_xxx API
+
+ -- Slava Monich <slava.monich@jolla.com>  Fri, 13 Jul 2018 13:53:38 +0300
+
 libgrilio (1.0.24) unstable; urgency=low
 
   * Tweaked timeout logic
