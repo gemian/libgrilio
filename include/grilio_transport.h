@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018 Jolla Ltd.
- * Contact: Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2019 Jolla Ltd.
+ * Copyright (C) 2018-2019 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -13,9 +13,9 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of Jolla Ltd nor the names of its contributors may
- *      be used to endorse or promote products derived from this software
- *      without specific prior written permission.
+ *   3. Neither the names of the copyright holders nor the names of its
+ *      contributors may be used to endorse or promote products derived
+ *      from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -39,6 +39,17 @@
 
 G_BEGIN_DECLS
 
+typedef struct grilio_transport_priv GRilIoTransportPriv;
+
+struct grilio_transport {
+    GObject parent;
+    GRilIoTransportPriv* priv;
+    gboolean connected;
+    guint ril_version;
+    const char* name;
+    const char* log_prefix;
+};
+
 typedef enum grilio_send_status {
     GRILIO_SEND_OK,
     GRILIO_SEND_ERROR,
@@ -57,58 +68,6 @@ typedef enum grilio_transport_indication_type {
     GRILIO_INDICATION_UNSOLICITED,
     GRILIO_INDICATION_UNSOLICITED_ACK_EXP,
 } GRILIO_INDICATION_TYPE;
-
-typedef struct grilio_transport_priv GRilIoTransportPriv;
-
-struct grilio_transport {
-    GObject parent;
-    GRilIoTransportPriv* priv;
-    gboolean connected;
-    guint ril_version;
-    const char* name;
-    const char* log_prefix;
-};
-
-typedef
-void
-(*GRilIoTransportFunc)(
-    GRilIoTransport* transport,
-    void* user_data);
-
-typedef
-void
-(*GRilIoTransportErrorFunc)(
-    GRilIoTransport* transport,
-    const GError* error,
-    void* user_data);
-
-typedef
-void
-(*GRilIoTransportRequestFunc)(
-    GRilIoTransport* transport,
-    GRilIoRequest* req,
-    void* user_data);
-
-typedef
-void
-(*GRilIoTransportResponseFunc)(
-    GRilIoTransport* transport,
-    GRILIO_RESPONSE_TYPE type,
-    guint serial,
-    int status,
-    const void* data,
-    guint len,
-    void* user_data);
-
-typedef
-void
-(*GRilIoTransportIndicationFunc)(
-    GRilIoTransport* transport,
-    GRILIO_INDICATION_TYPE type,
-    guint code,
-    const void* data,
-    guint len,
-    void* user_data);
 
 GRilIoTransport*
 grilio_transport_socket_new(
@@ -129,81 +88,10 @@ void
 grilio_transport_unref(
     GRilIoTransport* transport);
 
-guint
-grilio_transport_version_offset(
-    GRilIoTransport* transport);
-
-void
-grilio_transport_set_name(
-    GRilIoTransport* transport,
-    const char* name);
-
-GRILIO_SEND_STATUS
-grilio_transport_send(
-    GRilIoTransport* transport,
-    GRilIoRequest* req,
-    guint code);
-
 void
 grilio_transport_shutdown(
     GRilIoTransport* transport,
     gboolean flush);
-
-gulong
-grilio_transport_add_connected_handler(
-    GRilIoTransport* transport,
-    GRilIoTransportFunc func,
-    void* user_data);
-
-gulong
-grilio_transport_add_disconnected_handler(
-    GRilIoTransport* transport,
-    GRilIoTransportFunc func,
-    void* user_data);
-
-gulong
-grilio_transport_add_request_sent_handler(
-    GRilIoTransport* transport,
-    GRilIoTransportRequestFunc func,
-    void* user_data);
-
-gulong
-grilio_transport_add_response_handler(
-    GRilIoTransport* transport,
-    GRilIoTransportResponseFunc func,
-    void* user_data);
-
-gulong
-grilio_transport_add_indication_handler(
-    GRilIoTransport* transport,
-    GRilIoTransportIndicationFunc func,
-    void* user_data);
-
-gulong
-grilio_transport_add_read_error_handler(
-    GRilIoTransport* transport,
-    GRilIoTransportErrorFunc func,
-    void* user_data);
-
-gulong
-grilio_transport_add_write_error_handler(
-    GRilIoTransport* transport,
-    GRilIoTransportErrorFunc func,
-    void* user_data);
-
-void
-grilio_transport_remove_handler(
-    GRilIoTransport* transport,
-    gulong id);
-
-void
-grilio_transport_remove_handlers(
-    GRilIoTransport* transport,
-    gulong* ids,
-    guint count);
-
-#define grilio_transport_remove_all_handlers(transport,ids) \
-    grilio_transport_remove_handlers(transport, ids, G_N_ELEMENTS(ids))
 
 G_END_DECLS
 
