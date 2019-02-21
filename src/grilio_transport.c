@@ -44,17 +44,6 @@ struct grilio_transport_priv {
 G_DEFINE_ABSTRACT_TYPE(GRilIoTransport, grilio_transport, G_TYPE_OBJECT)
 
 #define PARENT_CLASS grilio_transport_parent_class
-#define GRILIO_TRANSPORT(obj) \
-    G_TYPE_CHECK_INSTANCE_CAST((obj), GRILIO_TYPE_TRANSPORT, \
-    GRilIoTransport)
-#define GRILIO_TRANSPORT_CLASS(klass) \
-    G_TYPE_CHECK_CLASS_CAST((klass), GRILIO_TYPE_TRANSPORT, \
-    GRilIoTransportClass)
-#define GRILIO_TRANSPORT_GET_CLASS(obj) \
-    G_TYPE_INSTANCE_GET_CLASS((obj), GRILIO_TYPE_TRANSPORT, \
-    GRilIoTransportClass)
-#define GRILIO_IS_TRANSPORT_TYPE(klass) \
-    G_TYPE_CHECK_CLASS_TYPE(klass, GRILIO_TYPE_TRANSPORT)
 
 enum grilio_transport_signal {
     SIGNAL_CONNECTED,
