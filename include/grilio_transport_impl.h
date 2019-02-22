@@ -56,6 +56,15 @@ typedef struct grilio_transport_class {
 
 GType grilio_transport_get_type(void);
 #define GRILIO_TYPE_TRANSPORT (grilio_transport_get_type())
+#define GRILIO_TRANSPORT(obj) \
+    G_TYPE_CHECK_INSTANCE_CAST((obj), GRILIO_TYPE_TRANSPORT, \
+    GRilIoTransport)
+#define GRILIO_TRANSPORT_GET_CLASS(obj) \
+    G_TYPE_INSTANCE_GET_CLASS((obj), GRILIO_TYPE_TRANSPORT, \
+    GRilIoTransportClass)
+#define GRILIO_TRANSPORT_CLASS(klass) \
+    G_TYPE_CHECK_CLASS_CAST((klass), GRILIO_TYPE_TRANSPORT, \
+    GRilIoTransportClass)
 
 void
 grilio_transport_signal_connected(
