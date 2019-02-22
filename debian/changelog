@@ -1,3 +1,9 @@
+libgrilio (1.0.27) unstable; urgency=low
+
+  * Expose GRilIoTransport object macros
+
+ -- Slava Monich <slava.monich@jolla.com>  Fri, 22 Feb 2019 12:42:16 +0200
+
 libgrilio (1.0.26) unstable; urgency=low
 
   * Moved private GRilIoTransport API to src
