@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2015-2018 Jolla Ltd.
- * Contact: Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2015-2019 Jolla Ltd.
+ * Copyright (C) 2015-2019 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -13,9 +13,9 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of Jolla Ltd nor the names of its contributors may
- *      be used to endorse or promote products derived from this software
- *      without specific prior written permission.
+ *   3. Neither the names of the copyright holders nor the names of its
+ *      contributors may be used to endorse or promote products derived
+ *      from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -32,14 +32,10 @@
 
 #include "grilio_p.h"
 #include "grilio_parser.h"
+#include "grilio_transport_p.h"
 #include "grilio_log.h"
 
 #include <gutil_misc.h>
-
-#include <gio/gio.h>
-#include <errno.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 
 #define GRILIO_MAX_PACKET_LEN (0x8000)
 #define GRILIO_SUB_LEN (4)
@@ -57,15 +53,24 @@ typedef struct grilio_channel_event GrilIoChannelEvent;
 /* Log module */
 GLOG_MODULE_DEFINE("grilio");
 
+#define LOG_PREFIX(priv) ((priv)->transport->log_prefix)
+
+enum grilio_transport_events {
+    TRANSPORT_EVENT_CONNECTED,
+    TRANSPORT_EVENT_DISCONNECTED,
+    TRANSPORT_EVENT_REQUEST_SENT,
+    TRANSPORT_EVENT_RESPONSE,
+    TRANSPORT_EVENT_INDICATION,
+    TRANSPORT_EVENT_READ_ERROR,
+    TRANSPORT_EVENT_WRITE_ERROR,
+    TRANSPORT_EVENT_COUNT
+};
+
 /* Object definition */
 struct grilio_channel_priv {
-    char* name;
-    char* log_prefix;
-    GIOChannel* io_channel;
-    guint read_watch_id;
-    guint write_watch_id;
-    guint write_error_id;
-    GError* write_error;
+    GRilIoTransport* transport;
+    gulong transport_event_ids[TRANSPORT_EVENT_COUNT];
+    GRilIoRequest* send_req;
     guint last_req_id;
     guint last_logger_id;
     GHashTable* req_table;
@@ -88,28 +93,12 @@ struct grilio_channel_priv {
     guint timeout_id;
     gint64 next_deadline;
 
-    /* Subscription */
-    gchar sub[GRILIO_SUB_LEN];
-    guint sub_pos;
-
     /* Retry queue (sorted) */
     GRilIoRequest* retry_req;
 
     /* Send queue */
     GRilIoRequest* first_req;
     GRilIoRequest* last_req;
-
-    /* Send */
-    guint send_pos;
-    GRilIoRequest* send_req;
-
-    /* Receive */
-    gchar read_len_buf[4];
-    guint read_len_pos;
-    guint read_len;
-    guint read_buf_pos;
-    guint read_buf_alloc;
-    gchar* read_buf;
 
     /* Injected events */
     gboolean processing_injects;
@@ -120,6 +109,7 @@ struct grilio_channel_priv {
 
 typedef GObjectClass GRilIoChannelClass;
 G_DEFINE_TYPE(GRilIoChannel, grilio_channel, G_TYPE_OBJECT)
+#define PARENT_CLASS grilio_channel_parent_class
 #define GRILIO_CHANNEL_TYPE (grilio_channel_get_type())
 #define GRILIO_CHANNEL(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), \
         GRILIO_CHANNEL_TYPE, GRilIoChannel))
@@ -157,14 +147,13 @@ typedef struct grilio_channel_logger {
     int id;
     GrilIoChannelLogFunc log;
     void* user_data;
+    gboolean legacy;
 } GrilIoChannelLogger;
 
 static
-gboolean
-grilio_channel_write_callback(
-    GIOChannel* source,
-    GIOCondition condition,
-    gpointer data);
+void
+grilio_channel_process_injects(
+    GRilIoChannel* self);
 
 static
 void
@@ -193,16 +182,118 @@ grilio_channel_log(
     guint id,
     guint code,
     const void* data,
-    gsize data_len)
+    gsize len)
 {
     GRilIoChannelPriv* priv = self->priv;
     GSList* link = priv->log_list;
+    guint8* legacy_data = NULL;
+    gsize legacy_len = 0;
     while (link) {
         GSList* next = link->next;
         GrilIoChannelLogger* logger = link->data;
-        logger->log(self, type, id, code, data, data_len, logger->user_data);
+        if (logger->legacy) {
+            if (!legacy_data) {
+                guint32* header;
+                guint header_len;
+                guint ril_code;
+                switch (type) {
+                case GRILIO_PACKET_REQ:
+                    header_len = RIL_REQUEST_HEADER_SIZE;
+                    ril_code = code;
+                    break;
+                default:
+                case GRILIO_PACKET_RESP:
+                    header_len = RIL_RESPONSE_HEADER_SIZE;
+                    ril_code = RIL_PACKET_TYPE_SOLICITED;
+                    break;
+                case GRILIO_PACKET_RESP_ACK_EXP:
+                    header_len = RIL_RESPONSE_HEADER_SIZE;
+                    ril_code = RIL_PACKET_TYPE_SOLICITED_ACK_EXP;
+                    break;
+                case GRILIO_PACKET_UNSOL:
+                    header_len = RIL_UNSOL_HEADER_SIZE;
+                    ril_code = RIL_PACKET_TYPE_UNSOLICITED;
+                    break;
+                case GRILIO_PACKET_UNSOL_ACK_EXP:
+                    header_len = RIL_UNSOL_HEADER_SIZE;
+                    ril_code = RIL_PACKET_TYPE_UNSOLICITED_ACK_EXP;
+                    break;
+                case GRILIO_PACKET_ACK:
+                    header_len = RIL_ACK_HEADER_SIZE;
+                    ril_code = RIL_PACKET_TYPE_SOLICITED_ACK;
+                    break;
+                }
+
+                legacy_len = header_len + len;
+                legacy_data = g_malloc(legacy_len);
+                memcpy(legacy_data + header_len, data, len);
+                header = (guint32*)legacy_data;
+                header[0] = GUINT32_TO_RIL(ril_code);
+
+                switch (type) {
+                default:
+                case GRILIO_PACKET_RESP:
+                case GRILIO_PACKET_RESP_ACK_EXP:
+                    header[2] = GUINT32_TO_RIL(code); /* status */
+                    /* no break */
+                case GRILIO_PACKET_REQ:
+                case GRILIO_PACKET_ACK:
+                    header[1] = GUINT32_TO_RIL(id);
+                    break;
+                case GRILIO_PACKET_UNSOL_ACK_EXP:
+                case GRILIO_PACKET_UNSOL:
+                    header[1] = GUINT32_TO_RIL(code);
+                    break;
+                }
+            }
+            logger->log(self, type, id, code, legacy_data, legacy_len,
+                logger->user_data);
+        } else {
+            logger->log(self, type, id, code, data, len, logger->user_data);
+        }
         link = next;
     }
+    g_free(legacy_data);
+}
+
+static
+guint
+grilio_channel_logger_add(
+    GRilIoChannel* self,
+    gboolean legacy,
+    GrilIoChannelLogFunc log,
+    void* user_data)
+{
+    if (G_LIKELY(self && log)) {
+        GRilIoChannelPriv* priv = self->priv;
+        GrilIoChannelLogger* logger = g_slice_new(GrilIoChannelLogger);
+        priv->last_logger_id++;
+        if (!priv->last_logger_id) priv->last_logger_id++;
+        logger->id = priv->last_logger_id;
+        logger->log = log;
+        logger->user_data = user_data;
+        logger->legacy = legacy;
+        priv->log_list = g_slist_append(priv->log_list, logger);
+        return logger->id;
+    } else {
+        return 0;
+    }
+}
+
+static
+void
+grilio_channel_logger_free(
+    GrilIoChannelLogger* logger)
+{
+    g_slice_free(GrilIoChannelLogger, logger);
+}
+
+static
+void
+grilio_channel_logger_free1(
+    gpointer logger)
+{
+    grilio_channel_logger_free(logger);
 }
 
 static
@@ -258,21 +349,21 @@ grilio_channel_update_pending(
 static
 void
 grilio_channel_queue_request(
-    GRilIoChannelPriv* queue,
+    GRilIoChannelPriv* priv,
     GRilIoRequest* req)
 {
     GASSERT(!req->next);
     GASSERT(req->status == GRILIO_REQUEST_NEW ||
             req->status == GRILIO_REQUEST_RETRY);
     req->status = GRILIO_REQUEST_QUEUED;
-    if (queue->last_req) {
-        queue->last_req->next = req;
-        queue->last_req = req;
+    if (priv->last_req) {
+        priv->last_req->next = req;
+        priv->last_req = req;
     } else {
-        GASSERT(!queue->first_req);
-        queue->first_req = queue->last_req = req;
+        GASSERT(!priv->first_req);
+        priv->first_req = priv->last_req = req;
     }
-    GVERBOSE("Queued %srequest %u (%08x/%08x)", queue->log_prefix,
+    GVERBOSE("Queued %srequest %u (%08x/%08x)", LOG_PREFIX(priv),
         req->code, req->id, req->current_id);
 }
 
@@ -373,7 +464,6 @@ grilio_channel_dequeue_request(
     }
 
     if (req) {
-        guint32* header = (guint32*)req->bytes->data;
         if (prev) {
             prev->next = req->next;
         } else {
@@ -389,15 +479,9 @@ grilio_channel_dequeue_request(
         }
         GASSERT(req->status == GRILIO_REQUEST_QUEUED);
         req->status = GRILIO_REQUEST_SENDING;
-
-        /* Prepare the request for sending */
-        header[0] = GINT32_TO_BE(req->bytes->len - 4);
-        header[1] = GUINT32_TO_RIL(req->code);
-        header[2] = GUINT32_TO_RIL(req->current_id);
-        priv->send_pos = 0;
         req->submitted = g_get_monotonic_time();
 
-        GVERBOSE("Sending %srequest %u (%08x/%08x)", priv->log_prefix,
+        GVERBOSE("Sending %srequest %u (%08x/%08x)", LOG_PREFIX(priv),
             req->code, req->id, req->current_id);
 
         /* Keep track of pending requests, except for those which
@@ -428,73 +512,45 @@ grilio_channel_remove_request(
 }
 
 static
-gboolean
-grilio_channel_write_error_cb(
-    gpointer user_data)
+void
+grilio_channel_handle_error(
+    GRilIoTransport* transport,
+    const GError* error,
+    void* user_data)
 {
     GRilIoChannel* self = GRILIO_CHANNEL(user_data);
     GRilIoChannelPriv* priv = self->priv;
-    GError* error = priv->write_error;
 
-    GASSERT(priv->write_error_id);
-    priv->write_error_id = 0;
-    priv->write_error = NULL;
+    grilio_transport_shutdown(priv->transport, FALSE);
     g_signal_emit(self, grilio_channel_signals[SIGNAL_ERROR], 0, error);
-    g_error_free(error);
-    return G_SOURCE_REMOVE;
 }
 
 static
 void
-grilio_channel_handle_write_error(
-    GRilIoChannel* self,
-    GError* error)
+grilio_channel_handle_connected(
+    GRilIoTransport* transport,
+    void* user_data)
 {
-    GRilIoChannelPriv* priv = self->priv;
+    GRilIoChannel* self = GRILIO_CHANNEL(user_data);
 
-    GERR("%s write failed: %s", self->name, GERRMSG(error));
-    grilio_channel_shutdown(self, FALSE);
-
-    /* It's dangerous to emit write error signal right away. The signal
-     * handler may release the last reference to the caller. We should
-     * emit the signal on a fresh stack */
-    if (priv->write_error) {
-        g_error_free(priv->write_error);
-    }
-    /* grilio_channel_handle_write_error_cb will free the error */
-    priv->write_error = error;
-    if (!priv->write_error_id) {
-        priv->write_error_id = g_idle_add(grilio_channel_write_error_cb, self);
-    }
-
-    /* Zero watch ids because we're going to return FALSE from the callback */
-    priv->write_watch_id = 0;
+    self->connected = TRUE;
+    self->ril_version = transport->ril_version +
+        grilio_transport_version_offset(transport);
+    GVERBOSE("Public RIL version %u", self->ril_version);
+    g_signal_emit(self, grilio_channel_signals[SIGNAL_CONNECTED], 0);
+    grilio_channel_process_injects(self);
+    grilio_channel_schedule_write(self);
 }
 
 static
 void
-grilio_channel_handle_read_error(
-    GRilIoChannel* self,
-    GError* error)
+grilio_channel_handle_disconnected(
+    GRilIoTransport* transport,
+    void* user_data)
 {
-    GRilIoChannelPriv* priv = self->priv;
+    GRilIoChannel* self = GRILIO_CHANNEL(user_data);
 
-    GERR("%s read failed: %s", self->name, GERRMSG(error));
-    grilio_channel_shutdown(self, FALSE);
-
-    /* Zero watch ids because we're going to return FALSE from the callback */
-    priv->read_watch_id = 0;
-    g_signal_emit(self, grilio_channel_signals[SIGNAL_ERROR], 0, error);
-    g_error_free(error);
-}
-
-static
-void
-grilio_channel_handle_eof(
-    GRilIoChannel* self)
-{
-    GERR("%s hangup", self->name);
-    grilio_channel_shutdown(self, FALSE);
+    self->connected = FALSE;
     g_signal_emit(self, grilio_channel_signals[SIGNAL_EOF], 0);
 }
 
@@ -566,7 +622,7 @@ grilio_channel_pending_timeout(
         const gint64 t = grilio_channel_pending_deadline(priv, req);
         if (t <= now) {
             GDEBUG("Pending %srequest %u (%08x/%08x) expired",
-                priv->log_prefix, req->code, req->id, req->current_id);
+                LOG_PREFIX(priv), req->code, req->id, req->current_id);
             if (req == priv->block_req) {
                 /* Let the life continue */
                 grilio_request_unref(priv->block_req);
@@ -655,7 +711,7 @@ grilio_channel_timeout(
             req->deadline = 0;
             GDEBUG("%s%srequest %u (%08x/%08x) timed out",
                 (priv->block_req == req) ? "Blocking " : "",
-                priv->log_prefix, req->code, req->id, req->current_id);
+                LOG_PREFIX(priv), req->code, req->id, req->current_id);
             if (priv->block_req == req) {
                 expired = priv->block_req;
                 priv->block_req = NULL;
@@ -769,36 +825,47 @@ grilio_channel_reset_timeout(
 }
 
 static
+void
+grilio_channel_request_sent(
+    GRilIoChannel* self,
+    GRilIoRequest* req)
+{
+    GRilIoChannelPriv* priv = self->priv;
+
+    /* The request has been sent */
+    if (req->status == GRILIO_REQUEST_SENDING) {
+        req->status = GRILIO_REQUEST_SENT;
+    } else {
+        GASSERT(req->status == GRILIO_REQUEST_CANCELLED);
+    }
+
+    /* Log it */
+    grilio_channel_log(self, GRILIO_PACKET_REQ, req->current_id, req->code,
+        grilio_request_data(req), grilio_request_size(req));
+
+    /* Submit the next request(s) */
+    if (priv->send_req == req) {
+        priv->send_req = NULL;
+        grilio_request_unref(req);
+    }
+}
+
+static
 gboolean
-grilio_channel_write(
+grilio_channel_send_next_request(
     GRilIoChannel* self)
 {
-    GError* error = NULL;
-    gsize bytes_written;
     int req_timeout;
     GRilIoRequest* req;
     GRilIoChannelPriv* priv = self->priv;
 
-    if (priv->sub_pos < GRILIO_SUB_LEN) {
-        bytes_written = 0;
-        g_io_channel_write_chars(priv->io_channel, priv->sub + priv->sub_pos,
-            GRILIO_SUB_LEN - priv->sub_pos, &bytes_written, &error);
-        if (error) {
-            grilio_channel_handle_write_error(self, error);
-            return FALSE;
-        }
-        priv->sub_pos += bytes_written;
-        GASSERT(priv->sub_pos <= GRILIO_SUB_LEN);
-        if (priv->sub_pos < GRILIO_SUB_LEN) {
-            /* Will have to wait */
-            return TRUE;
-        }
-        GDEBUG("%s subscribed for %c%c%c%c", self->name,
-            priv->sub[0], priv->sub[1], priv->sub[2], priv->sub[3]);
-    }
-
     if (!self->connected) {
         GVERBOSE("%s not connected yet", self->name);
+        return FALSE;
+    }
+
+    if (priv->send_req) {
+        /* Request is being sent */
         return FALSE;
     }
 
@@ -836,34 +903,6 @@ grilio_channel_write(
         priv->block_req = grilio_request_ref(req);
     }
 
-    if (priv->send_pos < req->bytes->len) {
-        bytes_written = 0;
-        g_io_channel_write_chars(priv->io_channel,
-            (void*)(req->bytes->data + priv->send_pos),
-            req->bytes->len - priv->send_pos,
-            &bytes_written, &error);
-        if (error) {
-            grilio_channel_handle_write_error(self, error);
-            return FALSE;
-        }
-        priv->send_pos += bytes_written;
-        GASSERT(priv->send_pos <= req->bytes->len);
-        if (priv->send_pos < req->bytes->len) {
-            /* Will have to wait */
-            return TRUE;
-        }
-    }
-
-    /* The request has been sent */
-    if (req->status == GRILIO_REQUEST_SENDING) {
-        req->status = GRILIO_REQUEST_SENT;
-    } else {
-        GASSERT(req->status == GRILIO_REQUEST_CANCELLED);
-    }
-
-    grilio_channel_log(self, GRILIO_PACKET_REQ, req->current_id, req->code,
-        req->bytes->data + 4, req->bytes->len - 4);
-
     /* If there's no response callback and no need to retry, remove it
      * from the queue as well */
     if (!req->response && !grilio_request_can_retry(req)) {
@@ -881,16 +920,26 @@ grilio_channel_write(
         }
     }
 
-    grilio_request_unref(req);
-    priv->send_req = NULL;
-
-    /* Remove the watch if there's no more requests */
-    if (priv->first_req) {
+    if (grilio_transport_send(priv->transport, req, req->code) ==
+        GRILIO_SEND_OK) {
+        grilio_channel_request_sent(self, req);
         return TRUE;
     } else {
-        GVERBOSE("%s queue empty", self->name);
         return FALSE;
     }
+}
+
+static
+void
+grilio_channel_handle_request_sent(
+    GRilIoTransport* transport,
+    GRilIoRequest* req,
+    void* user_data)
+{
+    GRilIoChannel* self = GRILIO_CHANNEL(user_data);
+
+    grilio_channel_request_sent(self, req);
+    grilio_channel_schedule_write(self);
 }
 
 gboolean
@@ -953,39 +1002,13 @@ void
 grilio_channel_schedule_write(
     GRilIoChannel* self)
 {
-    GRilIoChannelPriv* priv = self->priv;
-    if (self->connected && priv->io_channel && !priv->write_watch_id) {
-        /* grilio_channel_write() will return FALSE if everything has been
-         * written. In that case there's no need to create G_IO_OUT watch. */
-        if (grilio_channel_write(self)) {
-            GVERBOSE("%s scheduling write", self->name);
-            priv->write_watch_id = g_io_add_watch(priv->io_channel, G_IO_OUT,
-                grilio_channel_write_callback, self);
+    if (self->connected) {
+        while (grilio_channel_send_next_request(self));
+#if GUTIL_LOG_VERBOSE
+        if (!self->priv->send_req && !self->priv->first_req) {
+            GVERBOSE("%squeue empty", LOG_PREFIX(self->priv));
         }
-    }
-}
-
-static
-void
-grilio_channel_connected(
-    GRilIoChannel* self)
-{
-    /* The caller has checked the length */
-    GRilIoChannelPriv* priv = self->priv;
-    GRilIoParser parser;
-    guint num = 0;
-    GASSERT(!self->connected);
-    grilio_parser_init(&parser, priv->read_buf + RIL_UNSOL_HEADER_SIZE,
-        priv->read_len - RIL_UNSOL_HEADER_SIZE);
-    if (grilio_parser_get_uint32(&parser, &num) && num == 1 &&
-        grilio_parser_get_uint32(&parser, &self->ril_version)) {
-        GDEBUG("Connected, RIL version %u", self->ril_version);
-        self->connected = TRUE;
-        g_signal_emit(self, grilio_channel_signals[SIGNAL_CONNECTED], 0);
-        grilio_channel_schedule_write(self);
-    } else {
-        /* Terminate the connection? */
-        GERR("Failed to parse RIL_UNSOL_RIL_CONNECTED");
+#endif
     }
 }
 
@@ -1008,17 +1031,36 @@ grilio_channel_queue_ack(
 static
 void
 grilio_channel_handle_response(
-    GRilIoChannel* self,
-    GRILIO_PACKET_TYPE type)
+    GRilIoTransport* transport,
+    GRILIO_RESPONSE_TYPE type,
+    guint id,
+    int status,
+    const void* resp,
+    guint len,
+    void* user_data)
 {
-    /* The caller has checked the length */
+    GRilIoChannel* self = GRILIO_CHANNEL(user_data);
     GRilIoChannelPriv* priv = self->priv;
-    const guint32* buf = (guint32*)priv->read_buf;
-    const guint32 id = GUINT32_FROM_RIL(buf[1]);
-    const guint32 status = GUINT32_FROM_RIL(buf[2]);
     const void* key = GINT_TO_POINTER(id);
     GRilIoRequest* req = g_hash_table_lookup(priv->req_table, key);
+    GRILIO_PACKET_TYPE ptype;
 
+    switch (type) {
+    case GRILIO_RESPONSE_SOLICITED_ACK:
+        GDEBUG("%08x acked", id);
+        grilio_channel_log(self, GRILIO_PACKET_ACK, id, 0, resp, len);
+        /* The request is not done yet */
+        return;
+    case GRILIO_RESPONSE_SOLICITED_ACK_EXP:
+        grilio_channel_queue_ack(self);
+        ptype = GRILIO_PACKET_RESP_ACK_EXP;
+        break;
+    default: GASSERT(type == GRILIO_RESPONSE_SOLICITED); /* no break */
+    case GRILIO_RESPONSE_SOLICITED:
+        ptype = GRILIO_PACKET_RESP;
+        break;
+    }
+        
     /* Remove this id from the list of pending requests */
     if (g_hash_table_remove(priv->pending, key)) {
         /* Reset submit time */
@@ -1027,7 +1069,7 @@ grilio_channel_handle_response(
     }
 
     /* Logger receives everything except the length */
-    grilio_channel_log(self, type, id, status, priv->read_buf, priv->read_len);
+    grilio_channel_log(self, ptype, id, status, resp, len);
 
     if (priv->block_req && priv->block_req->current_id == id) {
         /* Blocking request has completed */
@@ -1038,9 +1080,6 @@ grilio_channel_handle_response(
     /* Handle the case if we receive a response with the id of the
      * packet which we haven't sent yet. */
     if (req && req->status == GRILIO_REQUEST_SENT) {
-        const void* resp = priv->read_buf + RIL_RESPONSE_HEADER_SIZE;
-        const guint len = priv->read_len - RIL_RESPONSE_HEADER_SIZE;
-
         GASSERT(req->current_id == id);
         /* Temporary increment the ref count to compensate for
          * g_hash_table_remove possibly unreferencing the request */
@@ -1078,8 +1117,9 @@ grilio_channel_emit_unsol_event(
     GQuark detail;
     char signame[SIGNAL_UNSOL_EVENT_DETAIL_MAX_LENGTH + 1];
 
-    /* We should be connected when we are doing this */
-    GASSERT(self->connected);
+    /* We should be connected when we are doing this (unless we have just
+     * received RIL_UNSOL_RIL_CONNECTED event) */
+    GASSERT(self->connected || code == RIL_UNSOL_RIL_CONNECTED);
 
     /* Event code is the detail */
     snprintf(signame, sizeof(signame), SIGNAL_UNSOL_EVENT_DETAIL_FORMAT, code);
@@ -1146,257 +1186,34 @@ grilio_drop_pending_injects(
 
 static
 void
-grilio_channel_handle_unsol(
-    GRilIoChannel* self,
-    GRILIO_PACKET_TYPE type)
+grilio_channel_handle_indication(
+    GRilIoTransport* transport,
+    GRILIO_INDICATION_TYPE type,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
 {
-    /* The caller has checked the length */
-    GRilIoChannelPriv* priv = self->priv;
-    const guint32* buf = (guint32*)priv->read_buf;
-    const guint32 code = GUINT32_FROM_RIL(buf[1]);
+    GRilIoChannel* self = GRILIO_CHANNEL(user_data);
+    GRILIO_PACKET_TYPE ptype;
+
+    switch (type) {
+    case GRILIO_INDICATION_UNSOLICITED_ACK_EXP:
+        grilio_channel_queue_ack(self);
+        ptype = GRILIO_PACKET_UNSOL_ACK_EXP;
+        break;
+    default: GASSERT(type == GRILIO_INDICATION_UNSOLICITED); /* no break */
+    case GRILIO_INDICATION_UNSOLICITED:
+        ptype = GRILIO_PACKET_UNSOL;
+        break;
+    }
 
     /* Loggers get the whole thing except the length */
-    grilio_channel_log(self, type, 0, code, priv->read_buf, priv->read_len);
-
-    /* Handle RIL_UNSOL_RIL_CONNECTED */
-    if (code == RIL_UNSOL_RIL_CONNECTED) {
-        grilio_channel_connected(self);
-    }
+    grilio_channel_log(self, ptype, 0, code, data, len);
 
     /* Event handler gets event code and the data separately */
-    grilio_channel_emit_unsol_event(self, code,
-        priv->read_buf + RIL_UNSOL_HEADER_SIZE,
-        priv->read_len - RIL_UNSOL_HEADER_SIZE);
-
-    /* If connected has become TRUE, flush the inject queue */
-    if (code == RIL_UNSOL_RIL_CONNECTED && self->connected) {
-        grilio_channel_process_injects(self);
-    }
-}
-
-static
-gboolean
-grilio_channel_handle_solicited(
-    GRilIoChannel* self)
-{
-    GRilIoChannelPriv* priv = self->priv;
-    if (priv->read_len >= RIL_RESPONSE_HEADER_SIZE) {
-        grilio_channel_handle_response(self, GRILIO_PACKET_RESP);
-        return TRUE;
-    } else {
-        grilio_channel_handle_read_error(self, g_error_new(G_IO_ERROR,
-            G_IO_ERROR_INVALID_DATA, "Response too short (%u bytes)",
-            priv->read_len));
-        return FALSE;
-    }
-}
-
-static
-gboolean
-grilio_channel_handle_unsolicited(
-    GRilIoChannel* self)
-{
-    /* The caller has checked the length */
-    grilio_channel_handle_unsol(self, GRILIO_PACKET_UNSOL);
-    return TRUE;
-}
-
-static
-gboolean
-grilio_channel_handle_solicited_ack(
-    GRilIoChannel* self)
-{
-    /* The caller has checked the length */
-    GRilIoChannelPriv* priv = self->priv;
-    const guint32* buf = (guint32*)priv->read_buf;
-    const guint32 id = GUINT32_FROM_RIL(buf[1]);
-
-    GDEBUG("%08x acked", id);
-    /* Loggers get the whole thing except the length */
-    grilio_channel_log(self, GRILIO_PACKET_ACK, id, 0, priv->read_buf,
-        priv->read_len);
-    return TRUE;
-}
-
-static
-gboolean
-grilio_channel_handle_solicited_ack_exp(
-    GRilIoChannel* self)
-{
-    GRilIoChannelPriv* priv = self->priv;
-    if (priv->read_len >= RIL_RESPONSE_HEADER_SIZE) {
-        grilio_channel_queue_ack(self);
-        grilio_channel_handle_response(self, GRILIO_PACKET_RESP_ACK_EXP);
-        grilio_channel_schedule_write(self);
-        return TRUE;
-    } else {
-        grilio_channel_handle_read_error(self, g_error_new(G_IO_ERROR,
-            G_IO_ERROR_INVALID_DATA, "Response too short (%u bytes)",
-            priv->read_len));
-        return FALSE;
-    }
-}
-
-static
-gboolean
-grilio_channel_handle_unsolicited_ack_exp(
-    GRilIoChannel* self)
-{
-    grilio_channel_queue_ack(self);
-    grilio_channel_handle_unsol(self, GRILIO_PACKET_UNSOL_ACK_EXP);
+    grilio_channel_emit_unsol_event(self, code, data, len);
     grilio_channel_schedule_write(self);
-    return TRUE;
-}
-
-static
-gboolean
-grilio_channel_handle_packet(
-    GRilIoChannel* self)
-{
-    GRilIoChannelPriv* priv = self->priv;
-    if (priv->read_len >= RIL_MIN_HEADER_SIZE) {
-        const guint32* buf = (guint32*)priv->read_buf;
-        const RIL_PACKET_TYPE type = GUINT32_FROM_RIL(buf[0]);
-        switch (type) {
-        case RIL_PACKET_TYPE_SOLICITED:
-            return grilio_channel_handle_solicited(self);
-        case RIL_PACKET_TYPE_UNSOLICITED:
-            return grilio_channel_handle_unsolicited(self);
-        case RIL_PACKET_TYPE_SOLICITED_ACK:
-            return grilio_channel_handle_solicited_ack(self);
-        case RIL_PACKET_TYPE_SOLICITED_ACK_EXP:
-            return grilio_channel_handle_solicited_ack_exp(self);
-        case RIL_PACKET_TYPE_UNSOLICITED_ACK_EXP:
-            return grilio_channel_handle_unsolicited_ack_exp(self);
-        default:
-            /* Ignore unknown packets */
-            GWARN("Unexpected packet type id %d", type);
-            return TRUE;
-        }
-    } else {
-        grilio_channel_handle_read_error(self, g_error_new(G_IO_ERROR,
-            G_IO_ERROR_INVALID_DATA, "Packet too short (%u bytes)",
-            priv->read_len));
-        return FALSE;
-    }
-}
-
-static
-gboolean
-grilio_channel_read_chars(
-    GRilIoChannel* self,
-    gchar* buf,
-    gsize count,
-    gsize* bytes_read)
-{
-    GError* error = NULL;
-    GIOStatus status = g_io_channel_read_chars(self->priv->io_channel, buf,
-        count, bytes_read, &error);
-    if (error) {
-        grilio_channel_handle_read_error(self, error);
-        return FALSE;
-    } else if (status == G_IO_STATUS_EOF) {
-        grilio_channel_handle_eof(self);
-        return FALSE;
-    } else {
-        return TRUE;
-    }
-}
-
-static
-gboolean
-grilio_channel_read(
-    GRilIoChannel* self)
-{
-    gsize bytes_read;
-    GRilIoChannelPriv* priv = self->priv;
-
-    /* Length */
-    if (priv->read_len_pos < 4) {
-        if (!grilio_channel_read_chars(self,
-            priv->read_len_buf + priv->read_len_pos,
-            4 - priv->read_len_pos, &bytes_read)) {
-            return FALSE;
-        }
-        priv->read_len_pos += bytes_read;
-        GASSERT(priv->read_len_pos <= 4);
-        if (priv->read_len_pos < 4) {
-            /* Need more bytes */
-            return TRUE;
-        } else {
-            /* We have finished reading the length (in Big Endian) */
-            const guint32* len = (guint32*)priv->read_len_buf;
-            priv->read_len = GUINT32_FROM_BE(*len);
-            GASSERT(priv->read_len <= GRILIO_MAX_PACKET_LEN);
-            if (priv->read_len <= GRILIO_MAX_PACKET_LEN) {
-                /* Reset buffer read position */
-                priv->read_buf_pos = 0;
-                /* Allocate enough space for the entire packet */
-                if (priv->read_buf_alloc < priv->read_len) {
-                    g_free(priv->read_buf);
-                    priv->read_buf_alloc = priv->read_len;
-                    priv->read_buf = g_malloc(priv->read_buf_alloc);
-                }
-            } else {
-                /* Message is too long or stream is broken */
-                return FALSE;
-            }
-        }
-    }
-
-    /* Packet body */
-    if (priv->read_buf_pos < priv->read_len) {
-        if (!grilio_channel_read_chars(self,
-            priv->read_buf + priv->read_buf_pos,
-            priv->read_len - priv->read_buf_pos, &bytes_read)) {
-            return FALSE;
-        }
-        priv->read_buf_pos += bytes_read;
-        GASSERT(priv->read_buf_pos <= priv->read_len);
-        if (priv->read_buf_pos < priv->read_len) {
-            /* Need more bytes */
-            return TRUE;
-        }
-    }
-
-    /* Reset the reading position to indicate that we are ready to start
-     * receiving the next packet */
-    priv->read_len_pos = 0;
-
-    /* We have finished reading the entire packet */
-    return grilio_channel_handle_packet(self);
-}
-
-static
-gboolean
-grilio_channel_read_callback(
-    GIOChannel* source,
-    GIOCondition condition,
-    gpointer data)
-{
-    GRilIoChannel* self = GRILIO_CHANNEL(data);
-    gboolean ok;
-    grilio_channel_ref(self);
-    ok = (condition & G_IO_IN) && grilio_channel_read(self);
-    if (!ok) self->priv->read_watch_id = 0;
-    grilio_channel_unref(self);
-    return ok;
-}
-
-static
-gboolean
-grilio_channel_write_callback(
-    GIOChannel* source,
-    GIOCondition condition,
-    gpointer data)
-{
-    GRilIoChannel* self = GRILIO_CHANNEL(data);
-    gboolean ok;
-    grilio_channel_ref(self);
-    ok = (condition & G_IO_OUT) && grilio_channel_write(self);
-    if (!ok) self->priv->write_watch_id = 0;
-    grilio_channel_unref(self);
-    return ok;
 }
 
 /*==========================================================================*
@@ -1408,58 +1225,57 @@ grilio_channel_new_socket(
     const char* path,
     const char* sub)
 {
-    if (G_LIKELY(path)) {
-        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (fd >= 0) {
-            struct sockaddr_un addr;
-            memset(&addr, 0, sizeof(addr));
-            addr.sun_family = AF_UNIX;
-            strncpy(addr.sun_path, path, sizeof(addr.sun_path));
-            if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
-                GRilIoChannel* channel = grilio_channel_new_fd(fd, sub, TRUE);
-                if (channel) {
-                    GDEBUG("Opened %s", path);
-                    return channel;
-                }
-            } else {
-		GERR("Can't connect to RILD: %s", strerror(errno));
-            }
-            close(fd);
-        } else {
-            GERR("Can't create unix socket: %s", strerror(errno));
-        }
-    }
-    return NULL;
+    GRilIoTransport* transport = grilio_transport_socket_new_path(path, sub);
+    GRilIoChannel* channel = grilio_channel_new(transport);
+
+    grilio_transport_unref(transport);
+    return channel;
 }
 
 GRilIoChannel*
 grilio_channel_new_fd(
     int fd,
     const char* sub,
-    gboolean can_close)
+    gboolean own_fd)
 {
-    if (G_LIKELY(fd >= 0 && (!sub || strlen(sub) == GRILIO_SUB_LEN))) {
-        GRilIoChannelPriv* priv;
-        GRilIoChannel* chan = g_object_new(GRILIO_CHANNEL_TYPE, NULL);
-        priv = chan->priv;
-        priv->io_channel = g_io_channel_unix_new(fd);
-        if (priv->io_channel) {
-            g_io_channel_set_flags(priv->io_channel, G_IO_FLAG_NONBLOCK, NULL);
-            g_io_channel_set_encoding(priv->io_channel, NULL, NULL);
-            g_io_channel_set_buffered(priv->io_channel, FALSE);
-            g_io_channel_set_close_on_unref(priv->io_channel, can_close);
-            priv->read_watch_id = g_io_add_watch(priv->io_channel,
-                G_IO_IN, grilio_channel_read_callback, chan);
-            if (sub) {
-                memcpy(priv->sub, sub, GRILIO_SUB_LEN);
-                priv->write_watch_id = g_io_add_watch(priv->io_channel,
-                    G_IO_OUT, grilio_channel_write_callback, chan);
-            } else {
-                priv->sub_pos = GRILIO_SUB_LEN;
-            }
-            return chan;
-        }
-        grilio_channel_unref(chan);
+    GRilIoTransport* transport = grilio_transport_socket_new(fd, sub, own_fd);
+    GRilIoChannel* channel = grilio_channel_new(transport);
+
+    grilio_transport_unref(transport);
+    return channel;
+}
+
+GRilIoChannel*
+grilio_channel_new(
+    GRilIoTransport* transport)
+{
+    if (G_LIKELY(transport)) {
+        GRilIoChannel* self = g_object_new(GRILIO_CHANNEL_TYPE, NULL);
+        GRilIoChannelPriv* priv = self->priv;
+
+        priv->transport = grilio_transport_ref(transport);
+        priv->transport_event_ids[TRANSPORT_EVENT_CONNECTED] =
+            grilio_transport_add_connected_handler(transport,
+                grilio_channel_handle_connected, self);
+        priv->transport_event_ids[TRANSPORT_EVENT_DISCONNECTED] =
+            grilio_transport_add_disconnected_handler(transport,
+                grilio_channel_handle_disconnected, self);
+        priv->transport_event_ids[TRANSPORT_EVENT_REQUEST_SENT] =
+            grilio_transport_add_request_sent_handler(transport,
+                grilio_channel_handle_request_sent, self);
+        priv->transport_event_ids[TRANSPORT_EVENT_RESPONSE] =
+            grilio_transport_add_response_handler(transport,
+                grilio_channel_handle_response, self);
+        priv->transport_event_ids[TRANSPORT_EVENT_INDICATION] =
+            grilio_transport_add_indication_handler(transport,
+                grilio_channel_handle_indication, self);
+        priv->transport_event_ids[TRANSPORT_EVENT_READ_ERROR] =
+            grilio_transport_add_read_error_handler(transport,
+                grilio_channel_handle_error, self);
+        priv->transport_event_ids[TRANSPORT_EVENT_WRITE_ERROR] =
+            grilio_transport_add_write_error_handler(transport,
+                grilio_channel_handle_error, self);
+        return self;
     }
     return NULL;
 }
@@ -1471,21 +1287,8 @@ grilio_channel_shutdown(
 {
     if (G_LIKELY(self)) {
         GRilIoChannelPriv* priv = self->priv;
-        if (priv->read_watch_id) {
-            g_source_remove(priv->read_watch_id);
-            priv->read_watch_id = 0;
-        }
-        if (priv->write_watch_id) {
-            g_source_remove(priv->write_watch_id);
-            priv->write_watch_id = 0;
-        }
-        if (priv->io_channel) {
-            g_io_channel_shutdown(priv->io_channel, flush, NULL);
-            g_io_channel_unref(priv->io_channel);
-            priv->io_channel = NULL;
-        }
-        self->connected = FALSE;
-        self->ril_version = 0;
+
+        grilio_transport_shutdown(priv->transport, FALSE);
         grilio_drop_pending_injects(priv);
     }
 }
@@ -1533,14 +1336,9 @@ grilio_channel_set_name(
 {
     if (G_LIKELY(self)) {
         GRilIoChannelPriv* priv = self->priv;
-        g_free(priv->name);
-        g_free(priv->log_prefix);
-        self->name = priv->name = g_strdup(name);
-        if (name && name[0]) {
-            priv->log_prefix = g_strconcat(name, " ", NULL);
-        } else {
-            priv->log_prefix = g_strdup("");
-        }
+
+        grilio_transport_set_name(priv->transport, name);
+        self->name = priv->transport->name;
     }
 }
 
@@ -1691,19 +1489,16 @@ grilio_channel_add_logger(
     GrilIoChannelLogFunc log,
     void* user_data)
 {
-    if (G_LIKELY(self && log)) {
-        GRilIoChannelPriv* priv = self->priv;
-        GrilIoChannelLogger* logger = g_slice_new(GrilIoChannelLogger);
-        priv->last_logger_id++;
-        if (!priv->last_logger_id) priv->last_logger_id++;
-        logger->id = priv->last_logger_id;
-        logger->log = log;
-        logger->user_data = user_data;
-        priv->log_list = g_slist_append(priv->log_list, logger);
-        return logger->id;
-    } else {
-        return 0;
-    }
+    return grilio_channel_logger_add(self, TRUE, log, user_data);
+}
+
+guint
+grilio_channel_add_logger2(
+    GRilIoChannel* self,
+    GrilIoChannelLogFunc log,
+    void* user_data)
+{
+    return grilio_channel_logger_add(self, FALSE, log, user_data);
 }
 
 void
@@ -1718,7 +1513,7 @@ grilio_channel_remove_logger(
             GSList* next = link->next;
             GrilIoChannelLogger* logger = link->data;
             if (logger->id == id) {
-                g_slice_free(GrilIoChannelLogger, logger);
+                grilio_channel_logger_free(logger);
                 priv->log_list = g_slist_delete_link(priv->log_list, link);
                 return;
             }
@@ -1930,7 +1725,7 @@ grilio_channel_cancel_request(
             for (req = priv->first_req; req; req = req->next) {
                 if (req->id == id) {
                     GDEBUG("Cancelled %srequest %u (%08x/%08x)",
-                        priv->log_prefix, req->code, req->id, req->current_id);
+                        LOG_PREFIX(priv), req->code, req->id, req->current_id);
                     if (prev) {
                         prev->next = req->next;
                     } else {
@@ -1981,7 +1776,7 @@ grilio_channel_cancel_request(
             for (req = priv->retry_req; req; req = req->next) {
                 if (req->id == id) {
                     GDEBUG("Cancelled %srequest %u (%08x/%08x)",
-                        priv->log_prefix, req->code, req->id, req->current_id);
+                        LOG_PREFIX(priv), req->code, req->id, req->current_id);
                     if (prev) {
                         prev->next = req->next;
                     } else {
@@ -2055,7 +1850,7 @@ grilio_channel_cancel_all(
         /* Cancel queued requests */
         while (priv->first_req) {
             req = priv->first_req;
-            GDEBUG("Cancelled %srequest %u (%08x/%08x)", priv->log_prefix,
+            GDEBUG("Cancelled %srequest %u (%08x/%08x)", LOG_PREFIX(priv),
                 req->code, req->id, req->current_id);
             grilio_channel_remove_request(priv, req);
             priv->first_req = req->next;
@@ -2097,7 +1892,7 @@ grilio_channel_cancel_all(
         /* And the retry queue */
         while (priv->retry_req) {
             req = priv->retry_req;
-            GDEBUG("Cancelled %srequest %u (%08x/%08x)", priv->log_prefix,
+            GDEBUG("Cancelled %srequest %u (%08x/%08x)", LOG_PREFIX(priv),
                 req->code, req->id, req->current_id);
             grilio_channel_remove_request(priv, req);
             priv->retry_req = req->next;
@@ -2142,7 +1937,7 @@ grilio_channel_drop_request(
         req = g_hash_table_lookup(priv->pending, key);
         if (req) {
             GDEBUG("Dropped pending %srequest %u (%08x/%08x)",
-                priv->log_prefix, req->code, req->id, req->current_id);
+                LOG_PREFIX(priv), req->code, req->id, req->current_id);
             req->submitted = 0;
             g_hash_table_remove(priv->pending, key);
             grilio_channel_reset_pending_timeout(self);
@@ -2213,7 +2008,6 @@ grilio_channel_init(
         NULL, grilio_request_unref_proc);
     priv->timeout = GRILIO_TIMEOUT_NONE;
     priv->pending_timeout = GRILIO_DEFAULT_PENDING_TIMEOUT_MS;
-    priv->log_prefix = g_strdup("");
 
     self->priv = priv;
     self->name = "RIL";
@@ -2230,6 +2024,7 @@ grilio_channel_dispose(
 {
     GRilIoChannel* self = GRILIO_CHANNEL(object);
     GRilIoChannelPriv* priv = self->priv;
+
     grilio_channel_shutdown(self, FALSE);
     grilio_channel_cancel_all(self, TRUE);
     if (priv->send_req) {
@@ -2243,7 +2038,7 @@ grilio_channel_dispose(
     GASSERT(!priv->owner);
     GASSERT(!priv->owner_queue);
     GASSERT(!priv->block_req);
-    G_OBJECT_CLASS(grilio_channel_parent_class)->dispose(object);
+    G_OBJECT_CLASS(PARENT_CLASS)->dispose(object);
 }
 
 /**
@@ -2256,30 +2051,22 @@ grilio_channel_finalize(
 {
     GRilIoChannel* self = GRILIO_CHANNEL(object);
     GRilIoChannelPriv* priv = self->priv;
+
     GASSERT(!priv->first_inject);
     GASSERT(!priv->last_inject);
     GASSERT(!priv->process_injects_id);
     GASSERT(!priv->timeout_id);
-    GASSERT(!priv->read_watch_id);
-    GASSERT(!priv->write_watch_id);
-    GASSERT(!priv->io_channel);
     GASSERT(!priv->block_ids);
     if (priv->pending_timeout_id) {
         g_source_remove(priv->pending_timeout_id);
     }
-    if (priv->write_error_id) {
-        g_source_remove(priv->write_error_id);
-    }
-    if (priv->write_error) {
-        g_error_free(priv->write_error);
-    }
-    g_free(priv->name);
-    g_free(priv->log_prefix);
-    g_free(priv->read_buf);
     g_hash_table_destroy(priv->req_table);
     g_hash_table_destroy(priv->pending);
-    g_slist_free_full(priv->log_list, g_free);
-    G_OBJECT_CLASS(grilio_channel_parent_class)->finalize(object);
+    g_slist_free_full(priv->log_list, grilio_channel_logger_free1);
+    grilio_transport_remove_all_handlers(priv->transport,
+        priv->transport_event_ids);
+    grilio_transport_unref(priv->transport);
+    G_OBJECT_CLASS(PARENT_CLASS)->finalize(object);
 }
 
 /**
@@ -2291,6 +2078,7 @@ grilio_channel_class_init(
     GRilIoChannelClass* klass)
 {
     GObjectClass* object_class = G_OBJECT_CLASS(klass);
+
     object_class->dispose = grilio_channel_dispose;
     object_class->finalize = grilio_channel_finalize;
     g_type_class_add_private(klass, sizeof(GRilIoChannelPriv));

@@ -1,6 +1,6 @@
 # -*- Mode: makefile-gmake -*-
 
-.PHONY: clean all debug release pkgconfig
+.PHONY: clean test all debug release pkgconfig
 .PHONY: print_debug_lib print_release_lib
 .PHONY: print_debug_link print_release_link
 .PHONY: print_debug_path print_release_path
@@ -23,7 +23,7 @@ all: debug release pkgconfig
 
 VERSION_MAJOR = 1
 VERSION_MINOR = 0
-VERSION_RELEASE = 24
+VERSION_RELEASE = 27
 
 # Version for pkg-config
 PCVERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_RELEASE)
@@ -46,9 +46,12 @@ LIB = $(LIB_SONAME).$(VERSION_MINOR).$(VERSION_RELEASE)
 
 SRC = \
   grilio_channel.c \
+  grilio_encode.c \
   grilio_hexdump.c \
   grilio_request.c \
   grilio_parser.c \
+  grilio_transport.c \
+  grilio_transport_socket.c \
   grilio_queue.c
 
 #
@@ -160,11 +163,15 @@ print_release_path:
 	@echo $(RELEASE_BUILD_DIR)
 
 clean:
+	make -C test clean
 	rm -f *~ $(SRC_DIR)/*~ $(INCLUDE_DIR)/*~ rpm/*~
 	rm -fr $(BUILD_DIR) RPMS installroot
 	rm -fr debian/tmp debian/libgrilio debian/libgrilio-dev
 	rm -f documentation.list debian/files debian/*.substvars
 	rm -f debian/*.debhelper.log debian/*.debhelper debian/*~
+
+test:
+	make -C test test
 
 $(DEBUG_BUILD_DIR):
 	mkdir -p $@
@@ -200,18 +207,17 @@ $(PKGCONFIG): $(LIB_NAME).pc.in
 # Install
 #
 
-INSTALL_PERM  = 644
-
 INSTALL = install
 INSTALL_DIRS = $(INSTALL) -d
-INSTALL_FILES = $(INSTALL) -m $(INSTALL_PERM)
+INSTALL_LIBS = $(INSTALL) -m 755
+INSTALL_FILES = $(INSTALL) -m 644
 
 INSTALL_LIB_DIR = $(DESTDIR)/usr/lib
 INSTALL_INCLUDE_DIR = $(DESTDIR)/usr/include/$(NAME)
 INSTALL_PKGCONFIG_DIR = $(DESTDIR)/usr/lib/pkgconfig
 
 install: $(INSTALL_LIB_DIR)
-	$(INSTALL_FILES) $(RELEASE_LIB) $(INSTALL_LIB_DIR)
+	$(INSTALL_LIBS) $(RELEASE_LIB) $(INSTALL_LIB_DIR)
 	ln -sf $(LIB) $(INSTALL_LIB_DIR)/$(LIB_SYMLINK2)
 	ln -sf $(LIB_SYMLINK2) $(INSTALL_LIB_DIR)/$(LIB_SYMLINK1)
 

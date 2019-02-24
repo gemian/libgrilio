@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -32,17 +32,10 @@
 
 #include "test_common.h"
 
-#include "grilio_p.h"
 #include "grilio_parser.h"
+#include "grilio_request.h"
 
 #include <gutil_log.h>
-
-#if G_BYTE_ORDER == G_LITTLE_ENDIAN
-#  define UNICHAR2(high,low) low, high
-#elif G_BYTE_ORDER == G_BIG_ENDIAN
-#  define UNICHAR2(high,low) high, low
-#endif
-#define UNICHAR1(c) UNICHAR2(0,c)
 
 static
 void
@@ -131,22 +124,6 @@ test_basic_types(
     grilio_request_append_bytes(req2, NULL, 1);
 
     /* All these function should tolerate NULL arguments */
-    grilio_request_set_timeout(NULL, 0);
-    grilio_request_unref(NULL);
-    grilio_request_append_int32(NULL, 0);
-    grilio_request_append_byte(NULL, 0);
-    grilio_request_append_bytes(NULL, NULL, 0);
-    grilio_request_append_bytes(NULL, &bytes, 0);
-    grilio_request_append_bytes(NULL, NULL, 1);
-    grilio_request_append_utf8(NULL, NULL);
-    grilio_request_append_int32_array(NULL, NULL, 0);
-    grilio_request_append_uint32_array(NULL, NULL, 0);
-    g_assert(!grilio_request_ref(NULL));
-    g_assert(grilio_request_status(NULL) == GRILIO_REQUEST_INVALID);
-    g_assert(!grilio_request_id(NULL));
-    g_assert(!grilio_request_data(NULL));
-    g_assert(!grilio_request_size(NULL));
-
     grilio_request_append_bytes(req2, data, len);
     g_assert(grilio_request_data(req2));
     g_assert(len == grilio_request_size(req2));
@@ -159,6 +136,8 @@ test_basic_types(
 /*==========================================================================*
  * Strings
  *==========================================================================*/
+
+#define UNICHAR(c) TEST_INT16_BYTES(c)
 
 static
 void
@@ -177,21 +156,21 @@ test_strings(
         0x00, 0x00, 0xff, 0xff,
         /* "1" */
         0x01, 0x00, 0x00, 0x00,
-        UNICHAR1('1'), 0x00, 0x00,
+        UNICHAR('1'), 0x00, 0x00,
         /* "12" */
         0x02, 0x00, 0x00, 0x00,
-        UNICHAR1('1'), UNICHAR1('2'), 0x00, 0x00, 0x00, 0x00,
+        UNICHAR('1'), UNICHAR('2'), 0x00, 0x00, 0x00, 0x00,
         /* "123" */
         0x03, 0x00, 0x00, 0x00,
-        UNICHAR1('1'), UNICHAR1('2'), UNICHAR1('3'), 0x00, 0x00,
+        UNICHAR('1'), UNICHAR('2'), UNICHAR('3'), 0x00, 0x00,
         /* "1234" */
         0x04, 0x00,0x00, 0x00,
-        UNICHAR1('1'), UNICHAR1('2'), UNICHAR1('3'), UNICHAR1('4'),
+        UNICHAR('1'), UNICHAR('2'), UNICHAR('3'), UNICHAR('4'),
         0x00, 0x00, 0x00, 0x00,
         /* "test" in Russian */
         0x04, 0x00,0x00, 0x00,
-        UNICHAR2(0x04,0x42), UNICHAR2(0x04,0x35),
-        UNICHAR2(0x04,0x41), UNICHAR2(0x04,0x42),
+        UNICHAR(0x0442), UNICHAR(0x0435),
+        UNICHAR(0x0441), UNICHAR(0x0442),
         0x00, 0x00, 0x00, 0x00
     };
 
@@ -208,6 +187,8 @@ test_strings(
     test_parser_init_req(&parser, req);
 
     for (i=0; i<G_N_ELEMENTS(test_string); i++) {
+        GRilIoParser parser2 = parser;
+        g_assert(grilio_parser_get_nullable_utf8(&parser2, NULL));
         decoded[i] = grilio_parser_get_utf8(&parser);
     }
 
@@ -468,26 +449,6 @@ test_format(
 }
 
 /*==========================================================================*
- * Flags
- *==========================================================================*/
-
-static
-void
-test_flags(
-    void)
-{
-    GRilIoRequest* req = grilio_request_new();
-
-    g_assert(!(req->flags & GRILIO_REQUEST_FLAG_BLOCKING));
-    grilio_request_set_blocking(req, TRUE);
-    g_assert(req->flags & GRILIO_REQUEST_FLAG_BLOCKING);
-    grilio_request_set_blocking(req, FALSE);
-    g_assert(!(req->flags & GRILIO_REQUEST_FLAG_BLOCKING));
-
-    grilio_request_unref(req);
-}
-
-/*==========================================================================*
  * SubParser
  *==========================================================================*/
 
@@ -529,9 +490,6 @@ test_subparser(
 int main(int argc, char* argv[])
 {
     TestOpt test_opt;
-    G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
-    g_type_init();
-    G_GNUC_END_IGNORE_DEPRECATIONS;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_PREFIX "BasicTypes", test_basic_types);
     g_test_add_func(TEST_PREFIX "Strings", test_strings);
@@ -541,7 +499,6 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "ArrayUtf8", test_array_utf8);
     g_test_add_func(TEST_PREFIX "ArrayInt32", test_array_int32);
     g_test_add_func(TEST_PREFIX "Format", test_format);
-    g_test_add_func(TEST_PREFIX "Flags", test_flags);
     g_test_add_func(TEST_PREFIX "SubParser", test_subparser);
     test_init(&test_opt, argc, argv);
     return g_test_run();
