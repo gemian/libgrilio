@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2015-2018 Jolla Ltd.
- * Contact: Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2015-2019 Jolla Ltd.
+ * Copyright (C) 2015-2019 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -13,9 +13,9 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of Jolla Ltd nor the names of its contributors may
- *      be used to endorse or promote products derived from this software
- *      without specific prior written permission.
+ *   3. Neither the names of the copyright holders nor the names of its
+ *      contributors may be used to endorse or promote products derived
+ *      from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -39,6 +39,7 @@
 
 #include "grilio_test_server.h"
 #include "grilio_transport_p.h"
+#include "grilio_transport_impl.h"
 #include "grilio_p.h"
 
 #include <gutil_log.h>
@@ -440,6 +441,11 @@ test_basic(
     g_assert(!grilio_channel_get_request(test->io, 0));
     g_assert(!grilio_channel_get_request(test->io, INT_MAX));
     grilio_channel_inject_unsol_event(NULL, 0, NULL, 0);
+
+    /* Id generation */
+    id = grilio_transport_get_id(test->transport);
+    g_assert(id);
+    grilio_transport_release_id(test->transport, id);
 
     /* Test send/cancel before we are connected to the server. */
     id = grilio_channel_send_request(test->io, NULL, 0);
@@ -1444,7 +1450,6 @@ test_short_response2(
 
 typedef struct test_logger_packet {
     GRILIO_PACKET_TYPE type;
-    guint id;
     guint code;
     const guint8* data;
     guint len;
@@ -1510,55 +1515,46 @@ static const guint8 test_logger_packet_9[] = {
 static const TestLoggerPacket test_logger_packets[] = {
     {
         GRILIO_PACKET_UNSOL,
-        0,
         RIL_UNSOL_RIL_CONNECTED,
         TEST_ARRAY_AND_SIZE(test_logger_packet_1),
         RIL_UNSOL_HEADER_SIZE
     },{
         GRILIO_PACKET_REQ,
-        1,
         RIL_REQUEST_TEST,
         TEST_ARRAY_AND_SIZE(test_logger_packet_2),
         RIL_REQUEST_HEADER_SIZE
     },{
         GRILIO_PACKET_REQ,
-        2,
         RIL_REQUEST_TEST_1,
         TEST_ARRAY_AND_SIZE(test_logger_packet_3),
         RIL_REQUEST_HEADER_SIZE
     },{
         GRILIO_PACKET_ACK,
-        1,
         0,
         TEST_ARRAY_AND_SIZE(test_logger_packet_4),
         RIL_ACK_HEADER_SIZE
     },{
         GRILIO_PACKET_RESP_ACK_EXP,
-        1,
         0,
         TEST_ARRAY_AND_SIZE(test_logger_packet_5),
         RIL_RESPONSE_HEADER_SIZE
     },{
         GRILIO_PACKET_REQ,
-        3,
         RIL_RESPONSE_ACKNOWLEDGEMENT,
         TEST_ARRAY_AND_SIZE(test_logger_packet_6),
         RIL_REQUEST_HEADER_SIZE
     },{
         GRILIO_PACKET_RESP,
-        2,
         0,
         TEST_ARRAY_AND_SIZE(test_logger_packet_7),
         RIL_RESPONSE_HEADER_SIZE
     },{
         GRILIO_PACKET_UNSOL_ACK_EXP,
-        0,
         RIL_REQUEST_TEST_2,
         TEST_ARRAY_AND_SIZE(test_logger_packet_8),
         RIL_UNSOL_HEADER_SIZE
     },{
         GRILIO_PACKET_REQ,
-        4,
         RIL_RESPONSE_ACKNOWLEDGEMENT,
         TEST_ARRAY_AND_SIZE(test_logger_packet_9),
         RIL_ACK_HEADER_SIZE
@@ -1600,11 +1596,12 @@ test_logger_cb(
 
     GDEBUG("Packet #%u", log->count);
     g_assert(log->count <= G_N_ELEMENTS(test_logger_packets));
+    g_assert(id || type == GRILIO_PACKET_UNSOL || type == GRILIO_PACKET_UNSOL_ACK_EXP);
     g_assert(type == expect->type);
-    g_assert(id == expect->id);
     g_assert(code == expect->code);
     g_assert(len == expect->len);
-    g_assert(!memcmp(data, expect->data, len));
+    g_assert(!memcmp(data, expect->data, 4));
+    g_assert(!memcmp(((guint8*)data) + 8, expect->data + 8, len - 8));
 }
 
 static
@@ -1624,11 +1621,12 @@ test_logger1_cb(
 
     GDEBUG("Packet #%u", log->count);
     g_assert(log->count <= G_N_ELEMENTS(test_logger_packets));
+    g_assert(id || type == GRILIO_PACKET_UNSOL || type == GRILIO_PACKET_UNSOL_ACK_EXP);
     g_assert(type == expect->type);
-    g_assert(id == expect->id);
     g_assert(code == expect->code);
     g_assert(len == expect->len);
-    g_assert(!memcmp(data, expect->data, len));
+    g_assert(!memcmp(data, expect->data, 4));
+    g_assert(!memcmp(((guint8*)data) + 8, expect->data + 8, len - 8));
 }
 
 static
@@ -1646,8 +1644,8 @@ test_logger2_cb(
     const TestLoggerPacket* expect = test_logger_packets + (log->count2++);
 
     g_assert(log->count2 <= G_N_ELEMENTS(test_logger_packets));
+    g_assert(id || type == GRILIO_PACKET_UNSOL || type == GRILIO_PACKET_UNSOL_ACK_EXP);
     g_assert(type == expect->type);
-    g_assert(id == expect->id);
     g_assert(code == expect->code);
     g_assert(len + expect->header_len == expect->len);
     g_assert(!memcmp(data, expect->data + expect->header_len, len));

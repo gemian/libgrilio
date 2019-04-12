@@ -39,6 +39,7 @@
 struct grilio_transport_priv {
     char* name;
     char* log_prefix;
+    GRilIoIdGen* id_gen;
 };
 
 G_DEFINE_ABSTRACT_TYPE(GRilIoTransport, grilio_transport, G_TYPE_OBJECT)
@@ -186,6 +187,48 @@ grilio_transport_set_name(
         } else {
             priv->log_prefix = NULL;
             self->log_prefix = "";
+        }
+    }
+}
+
+void
+grilio_transport_set_id_gen(
+    GRilIoTransport* self,
+    GRilIoIdGen* gen)
+{
+    if (G_LIKELY(self)) {
+        GRilIoTransportPriv* priv = self->priv;
+
+        priv->id_gen = gen;
+    }
+}
+
+guint
+grilio_transport_get_id(
+    GRilIoTransport* self) /* Since 1.0.28 */
+{
+    if (G_LIKELY(self)) {
+        GRilIoTransportPriv* priv = self->priv;
+        GRilIoIdGen* gen = priv->id_gen;
+
+        if (gen) {
+            return gen->fn->get_id(gen);
+        }
+    }
+    return 0;
+}
+
+void
+grilio_transport_release_id(
+    GRilIoTransport* self,
+    guint id) /* Since 1.0.28 */
+{
+    if (G_LIKELY(self)) {
+        GRilIoTransportPriv* priv = self->priv;
+        GRilIoIdGen* gen = priv->id_gen;
+
+        if (gen) {
+            gen->fn->release_id(gen, id);
         }
     }
 }
