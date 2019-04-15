@@ -33,6 +33,7 @@
 #include "test_common.h"
 
 #include "grilio_transport_p.h"
+#include "grilio_transport_impl.h"
 
 #include "grilio_test_server.h"
 
@@ -66,6 +67,9 @@ test_basic(
     grilio_transport_unref(NULL);
     g_assert(grilio_transport_version_offset(NULL) == 0);
     grilio_transport_set_name(NULL, NULL);
+    grilio_transport_set_id_gen(NULL, NULL);
+    g_assert(!grilio_transport_get_id(NULL));
+    grilio_transport_release_id(NULL, 0);
     g_assert(grilio_transport_send(NULL, NULL, 0) == GRILIO_SEND_ERROR);
     g_assert(grilio_transport_send(trans, NULL, 0) == GRILIO_SEND_ERROR);
     grilio_transport_shutdown(NULL, FALSE);
@@ -89,6 +93,10 @@ test_basic(
     id = grilio_transport_add_connected_handler(trans, test_dummy_cb, NULL);
     g_assert(id);
     grilio_transport_remove_handler(trans, id);
+
+    /* No id generator - no id */
+    g_assert(!grilio_transport_get_id(trans));
+    grilio_transport_release_id(trans, 0);
 
     g_assert(grilio_transport_ref(trans) == trans);
     grilio_transport_unref(trans);

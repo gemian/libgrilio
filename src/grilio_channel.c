@@ -36,6 +36,7 @@
 #include "grilio_log.h"
 
 #include <gutil_misc.h>
+#include <gutil_macros.h>
 
 #define GRILIO_MAX_PACKET_LEN (0x8000)
 #define GRILIO_SUB_LEN (4)
@@ -71,8 +72,7 @@ struct grilio_channel_priv {
     GRilIoTransport* transport;
     gulong transport_event_ids[TRANSPORT_EVENT_COUNT];
     GRilIoRequest* send_req;
-    guint last_req_id;
-    guint last_logger_id;
+    guint last_id;
     GHashTable* req_table;
     GHashTable* pending;
     gboolean last_pending;
@@ -80,9 +80,10 @@ struct grilio_channel_priv {
     guint pending_timeout_id;
     gint64 next_pending_deadline;
     GSList* log_list;
+    GRilIoIdGen idgen;
+    GHashTable* gen_ids;
 
     /* Serialization */
-    guint last_block_id;
     GHashTable* block_ids;
     GRilIoRequest* block_req;
     GRilIoQueue* owner;
@@ -173,6 +174,78 @@ grilio_channel_schedule_write(
 /*==========================================================================*
  * Implementation
  *==========================================================================*/
+
+static
+inline
+GRilIoChannelPriv*
+grilio_channel_priv_from_idgen(
+    GRilIoIdGen* gen)
+{
+    return G_CAST(gen, GRilIoChannelPriv, idgen);
+}
+
+static
+guint
+grilio_channel_generate_id(
+    GRilIoChannelPriv* priv)
+{
+    gconstpointer key;
+
+    do {
+        (priv->last_id)++;
+        key = GINT_TO_POINTER(priv->last_id);
+    } while (!priv->last_id || g_hash_table_contains(priv->req_table, key) ||
+        (priv->block_ids && g_hash_table_contains(priv->block_ids, key)) ||
+        g_hash_table_contains(priv->gen_ids, key));
+
+    return priv->last_id;
+}
+
+static
+guint
+grilio_channel_get_generic_id(
+    GRilIoChannelPriv* priv)
+{
+    guint id = grilio_channel_generate_id(priv);
+    gpointer key = GINT_TO_POINTER(id);
+
+    g_hash_table_insert(priv->gen_ids, key, key);
+    return id;
+}
+
+static
+void
+grilio_channel_release_generic_id(
+    GRilIoChannelPriv* priv,
+    guint id)
+{
+    g_hash_table_remove(priv->gen_ids, GINT_TO_POINTER(id));
+}
+
+static
+guint
+grilio_channel_idgen_get_id(
+    GRilIoIdGen* gen)
+{
+    return grilio_channel_get_generic_id(grilio_channel_priv_from_idgen(gen));
+}
+
+static
+void
+grilio_channel_idgen_release_id(
+    GRilIoIdGen* gen,
+    guint id)
+{
+    grilio_channel_release_generic_id(grilio_channel_priv_from_idgen(gen), id);
+}
+
+static
+gboolean
+grilio_channel_serialized(
+    GRilIoChannelPriv* priv)
+{
+    return priv->block_ids && g_hash_table_size(priv->block_ids);
+}
 
 static
 void
@@ -267,9 +340,8 @@ grilio_channel_logger_add(
     if (G_LIKELY(self && log)) {
         GRilIoChannelPriv* priv = self->priv;
         GrilIoChannelLogger* logger = g_slice_new(GrilIoChannelLogger);
-        priv->last_logger_id++;
-        if (!priv->last_logger_id) priv->last_logger_id++;
-        logger->id = priv->last_logger_id;
+
+        logger->id = grilio_channel_get_generic_id(priv);
         logger->log = log;
         logger->user_data = user_data;
         logger->legacy = legacy;
@@ -294,43 +366,6 @@ grilio_channel_logger_free1(
     gpointer logger)
 {
     grilio_channel_logger_free(logger);
-}
-
-static
-guint
-grilio_channel_generate_id(
-    GHashTable* table,
-    guint* id)
-{
-    (*id)++;
-    while (!(*id) || g_hash_table_contains(table, GINT_TO_POINTER((*id)))) {
-        (*id)++;
-    }
-    return (*id);
-}
-
-static
-guint
-grilio_channel_generate_req_id(
-    GRilIoChannelPriv* priv)
-{
-    return grilio_channel_generate_id(priv->req_table, &priv->last_req_id);
-}
-
-static
-guint
-grilio_channel_generate_block_id(
-    GRilIoChannelPriv* priv)
-{
-    return grilio_channel_generate_id(priv->block_ids, &priv->last_block_id);
-}
-
-static
-gboolean
-grilio_channel_serialized(
-    GRilIoChannelPriv* priv)
-{
-    return priv->block_ids && g_hash_table_size(priv->block_ids);
 }
 
 static
@@ -384,7 +419,7 @@ grilio_channel_requeue_request(
 
     /* Generate new request id. The first one is kept around because
      * it was returned to the caller. */
-    req->current_id = grilio_channel_generate_req_id(priv);
+    req->current_id = grilio_channel_generate_id(priv);
     GASSERT(req->id != req->current_id);
 
     req->deadline = 0;
@@ -1019,7 +1054,7 @@ grilio_channel_queue_ack(
 {
     GRilIoChannelPriv* priv = self->priv;
     GRilIoRequest* req = grilio_request_new();
-    req->id = req->current_id = grilio_channel_generate_req_id(priv);
+    req->id = req->current_id = grilio_channel_generate_id(priv);
     req->code = RIL_RESPONSE_ACKNOWLEDGEMENT;
     /* These packets are not subject to serialization and expect no reply */
     req->flags |= GRILIO_REQUEST_FLAG_INTERNAL | GRILIO_REQUEST_FLAG_NO_REPLY;
@@ -1254,6 +1289,7 @@ grilio_channel_new(
         GRilIoChannelPriv* priv = self->priv;
 
         priv->transport = grilio_transport_ref(transport);
+        grilio_transport_set_id_gen(priv->transport, &priv->idgen);
         priv->transport_event_ids[TRANSPORT_EVENT_CONNECTED] =
             grilio_transport_add_connected_handler(transport,
                 grilio_channel_handle_connected, self);
@@ -1353,7 +1389,7 @@ grilio_channel_serialize(
             GDEBUG("Serializing %s", self->name);
             priv->block_ids = g_hash_table_new(g_direct_hash, g_direct_equal);
         }
-        id = grilio_channel_generate_block_id(priv);
+        id = grilio_channel_generate_id(priv);
         g_hash_table_insert(priv->block_ids, GINT_TO_POINTER(id),
             GINT_TO_POINTER(id));
     }
@@ -1544,7 +1580,7 @@ grilio_channel_send_request_full(
     if (G_LIKELY(self && (!req || req->status == GRILIO_REQUEST_NEW))) {
         GRilIoChannelPriv* priv = self->priv;
         GRilIoRequest* internal_req = NULL;
-        const guint id = grilio_channel_generate_req_id(priv);
+        const guint id = grilio_channel_generate_id(priv);
         if (!req) req = internal_req = grilio_request_new();
         req->id = req->current_id = id;
         req->code = code;
@@ -2002,12 +2038,19 @@ grilio_channel_init(
 {
     GRilIoChannelPriv* priv = G_TYPE_INSTANCE_GET_PRIVATE(self,
         GRILIO_CHANNEL_TYPE, GRilIoChannelPriv);
+    static const GRilIoIdGenFn idgen_fn = {
+        grilio_channel_idgen_get_id,
+        grilio_channel_idgen_release_id
+    };
+
     priv->req_table = g_hash_table_new_full(g_direct_hash, g_direct_equal,
         NULL, grilio_request_unref_proc);
     priv->pending = g_hash_table_new_full(g_direct_hash, g_direct_equal,
         NULL, grilio_request_unref_proc);
     priv->timeout = GRILIO_TIMEOUT_NONE;
     priv->pending_timeout = GRILIO_DEFAULT_PENDING_TIMEOUT_MS;
+    priv->gen_ids = g_hash_table_new(g_direct_hash, g_direct_equal);
+    priv->idgen.fn = &idgen_fn;
 
     self->priv = priv;
     self->name = "RIL";
@@ -2027,6 +2070,7 @@ grilio_channel_dispose(
 
     grilio_channel_shutdown(self, FALSE);
     grilio_channel_cancel_all(self, TRUE);
+    g_hash_table_destroy(priv->gen_ids);
     if (priv->send_req) {
         grilio_request_unref(priv->send_req);
         priv->send_req = NULL;
@@ -2065,6 +2109,7 @@ grilio_channel_finalize(
     g_slist_free_full(priv->log_list, grilio_channel_logger_free1);
     grilio_transport_remove_all_handlers(priv->transport,
         priv->transport_event_ids);
+    grilio_transport_set_id_gen(priv->transport, NULL);
     grilio_transport_unref(priv->transport);
     G_OBJECT_CLASS(PARENT_CLASS)->finalize(object);
 }

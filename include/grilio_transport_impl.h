@@ -66,6 +66,15 @@ GType grilio_transport_get_type(void);
     G_TYPE_CHECK_CLASS_CAST((klass), GRILIO_TYPE_TRANSPORT, \
     GRilIoTransportClass)
 
+guint
+grilio_transport_get_id(
+    GRilIoTransport* transport); /* Since 1.0.28 */
+
+void
+grilio_transport_release_id(
+    GRilIoTransport* transport,
+    guint id); /* Since 1.0.28 */
+
 void
 grilio_transport_signal_connected(
     GRilIoTransport* transport);
