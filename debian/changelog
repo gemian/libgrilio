@@ -1,3 +1,10 @@
+libgrilio (1.0.28) unstable; urgency=low
+
+  * Added grilio_transport_get_id
+  * Added grilio_transport_release_id
+
+ -- Slava Monich <slava.monich@jolla.com>  Mon, 15 Apr 2019 13:45:45 +0300
+
 libgrilio (1.0.27) unstable; urgency=low
 
   * Expose GRilIoTransport object macros
