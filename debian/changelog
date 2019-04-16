@@ -1,3 +1,9 @@
+libgrilio (1.0.29) unstable; urgency=low
+
+  * Fixed a problem with acks never being freed until exit
+
+ -- Slava Monich <slava.monich@jolla.com>  Tue, 16 Apr 2019 13:29:04 +0300
+
 libgrilio (1.0.28) unstable; urgency=low
 
   * Added grilio_transport_get_id
