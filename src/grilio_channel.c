@@ -878,6 +878,11 @@ grilio_channel_request_sent(
     grilio_channel_log(self, GRILIO_PACKET_REQ, req->current_id, req->code,
         grilio_request_data(req), grilio_request_size(req));
 
+    /* If no reply is expected, remove it from req_table */
+    if (req->flags & GRILIO_REQUEST_FLAG_NO_REPLY) {
+        grilio_channel_remove_request(priv, req);
+    }
+
     /* Submit the next request(s) */
     if (priv->send_req == req) {
         priv->send_req = NULL;
