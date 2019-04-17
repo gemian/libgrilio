@@ -76,73 +76,86 @@ void
     guint len,
     void* user_data);
 
+G_GNUC_INTERNAL
 guint
 grilio_transport_version_offset(
     GRilIoTransport* transport);
 
+G_GNUC_INTERNAL
 void
 grilio_transport_set_name(
     GRilIoTransport* transport,
     const char* name);
 
+G_GNUC_INTERNAL
 void
 grilio_transport_set_channel(
     GRilIoTransport* transport,
     GRilIoChannel* channel);
 
+G_GNUC_INTERNAL
 GRILIO_SEND_STATUS
 grilio_transport_send(
     GRilIoTransport* transport,
     GRilIoRequest* req,
     guint code);
 
+G_GNUC_INTERNAL
 gulong
 grilio_transport_add_connected_handler(
     GRilIoTransport* transport,
     GRilIoTransportFunc func,
     void* user_data);
 
+G_GNUC_INTERNAL
 gulong
 grilio_transport_add_disconnected_handler(
     GRilIoTransport* transport,
     GRilIoTransportFunc func,
     void* user_data);
 
+G_GNUC_INTERNAL
 gulong
 grilio_transport_add_request_sent_handler(
     GRilIoTransport* transport,
     GRilIoTransportRequestFunc func,
     void* user_data);
 
+G_GNUC_INTERNAL
 gulong
 grilio_transport_add_response_handler(
     GRilIoTransport* transport,
     GRilIoTransportResponseFunc func,
     void* user_data);
 
+G_GNUC_INTERNAL
 gulong
 grilio_transport_add_indication_handler(
     GRilIoTransport* transport,
     GRilIoTransportIndicationFunc func,
     void* user_data);
 
+G_GNUC_INTERNAL
 gulong
 grilio_transport_add_read_error_handler(
     GRilIoTransport* transport,
     GRilIoTransportErrorFunc func,
     void* user_data);
 
+G_GNUC_INTERNAL
 gulong
 grilio_transport_add_write_error_handler(
     GRilIoTransport* transport,
     GRilIoTransportErrorFunc func,
     void* user_data);
 
+G_GNUC_INTERNAL
 void
 grilio_transport_remove_handler(
     GRilIoTransport* transport,
     gulong id);
 
+G_GNUC_INTERNAL
 void
 grilio_transport_remove_handlers(
     GRilIoTransport* transport,

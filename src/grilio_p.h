@@ -95,43 +95,52 @@ struct grilio_request {
 #define GRILIO_REQUEST_FLAG_NO_REPLY    (0x04)
 };
 
+G_GNUC_INTERNAL
 void
 grilio_request_unref_proc(
     gpointer data);
 
+G_GNUC_INTERNAL
 void
 grilio_queue_remove(
     GRilIoRequest* req);
 
+G_GNUC_INTERNAL
 GRilIoRequest*
 grilio_channel_get_request(
     GRilIoChannel* channel,
     guint id);
 
+G_GNUC_INTERNAL
 void
 grilio_channel_set_pending_timeout(
     GRilIoChannel* channel,
     int ms);
 
+G_GNUC_INTERNAL
 GRILIO_TRANSACTION_STATE
 grilio_channel_transaction_start(
     GRilIoChannel* channel,
     GRilIoQueue* queue);
 
+G_GNUC_INTERNAL
 GRILIO_TRANSACTION_STATE
 grilio_channel_transaction_state(
     GRilIoChannel* channel,
     GRilIoQueue* queue);
 
+G_GNUC_INTERNAL
 void
 grilio_channel_transaction_finish(
     GRilIoChannel* channel,
     GRilIoQueue* queue);
 
+G_GNUC_INTERNAL
 guint
 grilio_channel_get_id(
     GRilIoChannel* channel);
 
+G_GNUC_INTERNAL
 void
 grilio_channel_release_id(
     GRilIoChannel* channel,
