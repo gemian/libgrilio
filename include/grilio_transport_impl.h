@@ -47,11 +47,13 @@ typedef struct grilio_transport_class {
         GRilIoRequest* req, guint code);
     void (*shutdown)(GRilIoTransport* transport, gboolean flush);
 
+    /* Since 1.0.30 */
+    void (*set_channel)(GRilIoTransport* transport, GRilIoChannel* channel);
+
     /* Padding for future expansion */
     void (*_reserved1)(void);
     void (*_reserved2)(void);
     void (*_reserved3)(void);
-    void (*_reserved4)(void);
 } GRilIoTransportClass;
 
 GType grilio_transport_get_type(void);

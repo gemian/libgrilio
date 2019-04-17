@@ -35,19 +35,6 @@
 
 #include "grilio_transport.h"
 
-/* Request ID generator */
-
-typedef struct grilio_id_gen GRilIoIdGen;
-
-typedef struct grilio_id_gen_fn {
-    guint (*get_id)(GRilIoIdGen* gen);
-    void (*release_id)(GRilIoIdGen* gen, guint id);
-} GRilIoIdGenFn;
-
-struct grilio_id_gen {
-    const GRilIoIdGenFn* fn;
-};
-
 typedef
 void
 (*GRilIoTransportFunc)(
@@ -99,9 +86,9 @@ grilio_transport_set_name(
     const char* name);
 
 void
-grilio_transport_set_id_gen(
+grilio_transport_set_channel(
     GRilIoTransport* transport,
-    GRilIoIdGen* gen);
+    GRilIoChannel* channel);
 
 GRILIO_SEND_STATUS
 grilio_transport_send(
