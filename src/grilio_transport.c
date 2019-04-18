@@ -32,6 +32,7 @@
 
 #include "grilio_transport_impl.h"
 #include "grilio_transport_p.h"
+#include "grilio_p.h"
 #include "grilio_log.h"
 
 #include <gutil_misc.h>
@@ -39,7 +40,7 @@
 struct grilio_transport_priv {
     char* name;
     char* log_prefix;
-    GRilIoIdGen* id_gen;
+    GRilIoChannel* channel;
 };
 
 G_DEFINE_ABSTRACT_TYPE(GRilIoTransport, grilio_transport, G_TYPE_OBJECT)
@@ -191,31 +192,11 @@ grilio_transport_set_name(
     }
 }
 
-void
-grilio_transport_set_id_gen(
-    GRilIoTransport* self,
-    GRilIoIdGen* gen)
-{
-    if (G_LIKELY(self)) {
-        GRilIoTransportPriv* priv = self->priv;
-
-        priv->id_gen = gen;
-    }
-}
-
 guint
 grilio_transport_get_id(
     GRilIoTransport* self) /* Since 1.0.28 */
 {
-    if (G_LIKELY(self)) {
-        GRilIoTransportPriv* priv = self->priv;
-        GRilIoIdGen* gen = priv->id_gen;
-
-        if (gen) {
-            return gen->fn->get_id(gen);
-        }
-    }
-    return 0;
+    return G_LIKELY(self) ? grilio_channel_get_id(self->priv->channel) : 0;
 }
 
 void
@@ -224,12 +205,19 @@ grilio_transport_release_id(
     guint id) /* Since 1.0.28 */
 {
     if (G_LIKELY(self)) {
-        GRilIoTransportPriv* priv = self->priv;
-        GRilIoIdGen* gen = priv->id_gen;
+        grilio_channel_release_id(self->priv->channel, id);
+    }
+}
 
-        if (gen) {
-            gen->fn->release_id(gen, id);
-        }
+void
+grilio_transport_set_channel(
+    GRilIoTransport* self,
+    GRilIoChannel* channel)
+{
+    if (G_LIKELY(self)) {
+        GRilIoTransportClass* klass = GRILIO_TRANSPORT_GET_CLASS(self);
+
+        klass->set_channel(self, channel);
     }
 }
 
@@ -354,6 +342,15 @@ grilio_transport_remove_handlers(
 
 static
 void
+grilio_transport_default_set_channel(
+    GRilIoTransport* self,
+    GRilIoChannel* channel)
+{
+    self->priv->channel = channel;
+}
+
+static
+void
 grilio_transport_init(
     GRilIoTransport* self)
 {
@@ -384,6 +381,7 @@ grilio_transport_class_init(
     GRilIoTransportClass* klass)
 {
     G_OBJECT_CLASS(klass)->finalize = grilio_transport_finalize;
+    klass->set_channel = grilio_transport_default_set_channel;
     g_type_class_add_private(klass, sizeof(GRilIoTransportPriv));
     grilio_transport_signals[SIGNAL_CONNECTED] =
         g_signal_new(SIGNAL_CONNECTED_NAME, G_OBJECT_CLASS_TYPE(klass),

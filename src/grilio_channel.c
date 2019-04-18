@@ -80,7 +80,6 @@ struct grilio_channel_priv {
     guint pending_timeout_id;
     gint64 next_pending_deadline;
     GSList* log_list;
-    GRilIoIdGen idgen;
     GHashTable* gen_ids;
 
     /* Serialization */
@@ -176,15 +175,6 @@ grilio_channel_schedule_write(
  *==========================================================================*/
 
 static
-inline
-GRilIoChannelPriv*
-grilio_channel_priv_from_idgen(
-    GRilIoIdGen* gen)
-{
-    return G_CAST(gen, GRilIoChannelPriv, idgen);
-}
-
-static
 guint
 grilio_channel_generate_id(
     GRilIoChannelPriv* priv)
@@ -211,32 +201,6 @@ grilio_channel_get_generic_id(
 
     g_hash_table_insert(priv->gen_ids, key, key);
     return id;
-}
-
-static
-void
-grilio_channel_release_generic_id(
-    GRilIoChannelPriv* priv,
-    guint id)
-{
-    g_hash_table_remove(priv->gen_ids, GINT_TO_POINTER(id));
-}
-
-static
-guint
-grilio_channel_idgen_get_id(
-    GRilIoIdGen* gen)
-{
-    return grilio_channel_get_generic_id(grilio_channel_priv_from_idgen(gen));
-}
-
-static
-void
-grilio_channel_idgen_release_id(
-    GRilIoIdGen* gen,
-    guint id)
-{
-    grilio_channel_release_generic_id(grilio_channel_priv_from_idgen(gen), id);
 }
 
 static
@@ -1294,7 +1258,6 @@ grilio_channel_new(
         GRilIoChannelPriv* priv = self->priv;
 
         priv->transport = grilio_transport_ref(transport);
-        grilio_transport_set_id_gen(priv->transport, &priv->idgen);
         priv->transport_event_ids[TRANSPORT_EVENT_CONNECTED] =
             grilio_transport_add_connected_handler(transport,
                 grilio_channel_handle_connected, self);
@@ -1316,6 +1279,7 @@ grilio_channel_new(
         priv->transport_event_ids[TRANSPORT_EVENT_WRITE_ERROR] =
             grilio_transport_add_write_error_handler(transport,
                 grilio_channel_handle_error, self);
+        grilio_transport_set_channel(priv->transport, self);
         return self;
     }
     return NULL;
@@ -2029,6 +1993,25 @@ grilio_channel_inject_unsol_event(
     }
 }
 
+guint
+grilio_channel_get_id(
+    GRilIoChannel* self)
+{
+    return G_LIKELY(self) ? grilio_channel_get_generic_id(self->priv) : 0;
+}
+
+void
+grilio_channel_release_id(
+    GRilIoChannel* self,
+    guint id)
+{
+    if (G_LIKELY(self)) {
+        GRilIoChannelPriv* priv = self->priv;
+
+        g_hash_table_remove(priv->gen_ids, GINT_TO_POINTER(id));
+    }
+}
+
 /*==========================================================================*
  * Internals
  *==========================================================================*/
@@ -2043,10 +2026,6 @@ grilio_channel_init(
 {
     GRilIoChannelPriv* priv = G_TYPE_INSTANCE_GET_PRIVATE(self,
         GRILIO_CHANNEL_TYPE, GRilIoChannelPriv);
-    static const GRilIoIdGenFn idgen_fn = {
-        grilio_channel_idgen_get_id,
-        grilio_channel_idgen_release_id
-    };
 
     priv->req_table = g_hash_table_new_full(g_direct_hash, g_direct_equal,
         NULL, grilio_request_unref_proc);
@@ -2055,7 +2034,6 @@ grilio_channel_init(
     priv->timeout = GRILIO_TIMEOUT_NONE;
     priv->pending_timeout = GRILIO_DEFAULT_PENDING_TIMEOUT_MS;
     priv->gen_ids = g_hash_table_new(g_direct_hash, g_direct_equal);
-    priv->idgen.fn = &idgen_fn;
 
     self->priv = priv;
     self->name = "RIL";
@@ -2114,7 +2092,7 @@ grilio_channel_finalize(
     g_slist_free_full(priv->log_list, grilio_channel_logger_free1);
     grilio_transport_remove_all_handlers(priv->transport,
         priv->transport_event_ids);
-    grilio_transport_set_id_gen(priv->transport, NULL);
+    grilio_transport_set_channel(priv->transport, NULL);
     grilio_transport_unref(priv->transport);
     G_OBJECT_CLASS(PARENT_CLASS)->finalize(object);
 }

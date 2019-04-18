@@ -67,7 +67,7 @@ test_basic(
     grilio_transport_unref(NULL);
     g_assert(grilio_transport_version_offset(NULL) == 0);
     grilio_transport_set_name(NULL, NULL);
-    grilio_transport_set_id_gen(NULL, NULL);
+    grilio_transport_set_channel(NULL, NULL);
     g_assert(!grilio_transport_get_id(NULL));
     grilio_transport_release_id(NULL, 0);
     g_assert(grilio_transport_send(NULL, NULL, 0) == GRILIO_SEND_ERROR);
