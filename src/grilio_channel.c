@@ -614,6 +614,11 @@ grilio_channel_pending_timeout(
     GHashTableIter iter;
     gpointer value;
 
+    /*
+     * To prevent request completion from releasing the last reference
+     * to GRilIoChannel, temporarily bump the reference count.
+     */
+    grilio_channel_ref(self);
     priv->pending_timeout_id = 0;
     g_hash_table_iter_init(&iter, priv->pending);
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
@@ -634,6 +639,7 @@ grilio_channel_pending_timeout(
     grilio_channel_reset_pending_timeout(self);
     grilio_channel_schedule_write(self);
     grilio_channel_update_pending(self);
+    grilio_channel_unref(self);
     return G_SOURCE_REMOVE;
 }
 
