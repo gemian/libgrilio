@@ -1,5 +1,5 @@
 Name: libgrilio
-Version: 1.0.30
+Version: 1.0.31
 Release: 0
 Summary: RIL I/O library
 Group: Development/Libraries
