@@ -2053,7 +2053,6 @@ grilio_channel_dispose(
 
     grilio_channel_shutdown(self, FALSE);
     grilio_channel_cancel_all(self, TRUE);
-    g_hash_table_destroy(priv->gen_ids);
     if (priv->send_req) {
         grilio_request_unref(priv->send_req);
         priv->send_req = NULL;
@@ -2084,16 +2083,17 @@ grilio_channel_finalize(
     GASSERT(!priv->process_injects_id);
     GASSERT(!priv->timeout_id);
     GASSERT(!priv->block_ids);
-    if (priv->pending_timeout_id) {
-        g_source_remove(priv->pending_timeout_id);
-    }
-    g_hash_table_destroy(priv->req_table);
-    g_hash_table_destroy(priv->pending);
-    g_slist_free_full(priv->log_list, grilio_channel_logger_free1);
     grilio_transport_remove_all_handlers(priv->transport,
         priv->transport_event_ids);
     grilio_transport_set_channel(priv->transport, NULL);
     grilio_transport_unref(priv->transport);
+    if (priv->pending_timeout_id) {
+        g_source_remove(priv->pending_timeout_id);
+    }
+    g_hash_table_destroy(priv->gen_ids);
+    g_hash_table_destroy(priv->req_table);
+    g_hash_table_destroy(priv->pending);
+    g_slist_free_full(priv->log_list, grilio_channel_logger_free1);
     G_OBJECT_CLASS(PARENT_CLASS)->finalize(object);
 }
 
