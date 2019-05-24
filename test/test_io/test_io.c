@@ -172,8 +172,6 @@ test_free(
 {
     g_assert((test_opt.flags & TEST_FLAG_DEBUG) || test->timeout_id);
     if (test->timeout_id) g_source_remove(test->timeout_id);
-    /* Remove logger twice, the second call should do nothing */
-    grilio_channel_remove_logger(test->io, test->log);
     grilio_channel_remove_logger(test->io, test->log);
     grilio_channel_shutdown(test->io, FALSE);
     grilio_channel_unref(test->io);
@@ -276,6 +274,53 @@ test_connected(
     g_assert(!data->event_id);
 
     grilio_channel_remove_handler(test->io, pending_id);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * IdTimeout
+ *==========================================================================*/
+
+static
+void
+test_id_timeout_1(
+    guint id,
+    gboolean timeout,
+    gpointer user_data)
+{
+    g_assert(timeout);
+    (*((int*)user_data))++;
+}
+
+static
+void
+test_id_timeout_2(
+    guint id,
+    gboolean timeout,
+    gpointer user_data)
+{
+    g_assert(timeout);
+    g_main_loop_quit(user_data);
+}
+
+static
+void
+test_id_timeout(
+    void)
+{
+    Test* test = test_new(Test, "IdTimeout");
+    int count = 0;
+    guint id1 = grilio_transport_get_id_with_timeout(test->transport, 10,
+        test_id_timeout_1, &count);
+    guint id2 = grilio_transport_get_id_with_timeout(test->transport, 20,
+        test_id_timeout_2, test->loop);
+
+    g_main_loop_run(test->loop);
+    g_assert(count == 1);
+
+    /* Nothing to release anymore */
+    g_assert(!grilio_transport_release_id(test->transport, id1));
+    g_assert(!grilio_transport_release_id(test->transport, id2));
     test_free(test);
 }
 
@@ -445,7 +490,13 @@ test_basic(
     /* Id generation */
     id = grilio_transport_get_id(test->transport);
     g_assert(id);
-    grilio_transport_release_id(test->transport, id);
+    g_assert(grilio_transport_release_id(test->transport, id));
+    g_assert(!grilio_transport_release_id(test->transport, id));
+
+    id = grilio_transport_get_id_with_timeout(test->transport, 0, NULL, NULL);
+    g_assert(id);
+    g_assert(grilio_transport_release_id(test->transport, id));
+    g_assert(!grilio_transport_release_id(test->transport, id));
 
     /* Test send/cancel before we are connected to the server. */
     id = grilio_channel_send_request(test->io, NULL, 0);
@@ -3616,6 +3667,7 @@ int main(int argc, char* argv[])
     G_GNUC_END_IGNORE_DEPRECATIONS;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_PREFIX "Connected", test_connected);
+    g_test_add_func(TEST_PREFIX "IdTimeout", test_id_timeout);
     g_test_add_func(TEST_PREFIX "Basic", test_basic);
     g_test_add_func(TEST_PREFIX "Inject", test_inject);
     g_test_add_func(TEST_PREFIX "Queue", test_queue);

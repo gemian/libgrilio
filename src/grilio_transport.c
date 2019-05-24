@@ -199,14 +199,29 @@ grilio_transport_get_id(
     return G_LIKELY(self) ? grilio_channel_get_id(self->priv->channel) : 0;
 }
 
-void
+guint
+grilio_transport_get_id_with_timeout(
+    GRilIoTransport* self,
+    guint timeout_ms,
+    GRilIoTransportIdCleanupFunc cleanup,
+    gpointer user_data) /* Since 1.0.32 */
+{
+    if (G_LIKELY(self)) {
+        return grilio_channel_get_id_with_timeout(self->priv->channel,
+            timeout_ms, cleanup, user_data);
+    }
+    return 0;
+}
+
+gboolean /* Since 1.0.32 */
 grilio_transport_release_id(
     GRilIoTransport* self,
     guint id) /* Since 1.0.28 */
 {
     if (G_LIKELY(self)) {
-        grilio_channel_release_id(self->priv->channel, id);
+        return grilio_channel_release_id(self->priv->channel, id);
     }
+    return FALSE;
 }
 
 void
