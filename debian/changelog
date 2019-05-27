@@ -1,3 +1,10 @@
+libgrilio (1.0.32) unstable; urgency=low
+
+  * Added grilio_transport_get_id_with_timeout()
+  * Changed grilio_transport_release_id() return value from void to boolean
+
+ -- Slava Monich <slava.monich@jolla.com>  Mon, 27 May 2019 17:27:40 +0300
+
 libgrilio (1.0.31) unstable; urgency=low
 
   * Destroy transport before everything else
