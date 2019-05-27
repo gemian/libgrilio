@@ -150,6 +150,14 @@ typedef struct grilio_channel_logger {
     gboolean legacy;
 } GrilIoChannelLogger;
 
+typedef struct grilio_channel_gen_id_data {
+    GRilIoChannelPriv* priv;
+    guint id;
+    guint timeout_id;
+    GRilIoChannelIdCleanupFunc cleanup;
+    gpointer user_data;
+} GRilIoChannelGenIdData;
+
 static
 void
 grilio_channel_process_injects(
@@ -175,6 +183,59 @@ grilio_channel_schedule_write(
  *==========================================================================*/
 
 static
+gboolean
+grilio_channel_generic_id_timeout(
+    gpointer user_data)
+{
+    GRilIoChannelGenIdData* data = user_data;
+    GRilIoChannelPriv* priv = data->priv;
+
+    GDEBUG("id 0x%08x timed out", data->id);
+    data->timeout_id = 0;
+    g_hash_table_remove(priv->gen_ids, GINT_TO_POINTER(data->id));
+    return G_SOURCE_REMOVE;
+}
+
+static
+GRilIoChannelGenIdData*
+grilio_channel_generic_id_data_new(
+    GRilIoChannelPriv* priv,
+    guint id,
+    guint timeout_ms,
+    GRilIoChannelIdCleanupFunc cleanup,
+    gpointer user_data)
+{
+    GRilIoChannelGenIdData* data = g_slice_new(GRilIoChannelGenIdData);
+
+    data->priv = priv;
+    data->id = id;
+    data->cleanup = cleanup;
+    data->user_data = user_data;
+    data->timeout_id = g_timeout_add(timeout_ms,
+        grilio_channel_generic_id_timeout, data);
+    return data;
+}
+
+static
+void
+grilio_channel_generic_id_destroy(
+    gpointer value)
+{
+    if (value) {
+        GRilIoChannelGenIdData* data = value;
+
+        if (data->timeout_id) {
+            g_source_remove(data->timeout_id);
+        }
+        if (data->cleanup) {
+            /* data->timeout_id gets zeroed on timeout */
+            data->cleanup(data->id, !data->timeout_id, data->user_data);
+        }
+        g_slice_free1(sizeof(*data), data);
+    }
+}
+
+static
 guint
 grilio_channel_generate_id(
     GRilIoChannelPriv* priv)
@@ -196,10 +257,9 @@ guint
 grilio_channel_get_generic_id(
     GRilIoChannelPriv* priv)
 {
-    guint id = grilio_channel_generate_id(priv);
-    gpointer key = GINT_TO_POINTER(id);
+    const guint id = grilio_channel_generate_id(priv);
 
-    g_hash_table_insert(priv->gen_ids, key, key);
+    g_hash_table_insert(priv->gen_ids, GINT_TO_POINTER(id), NULL);
     return id;
 }
 
@@ -2006,7 +2066,7 @@ grilio_channel_get_id(
     return G_LIKELY(self) ? grilio_channel_get_generic_id(self->priv) : 0;
 }
 
-void
+gboolean
 grilio_channel_release_id(
     GRilIoChannel* self,
     guint id)
@@ -2014,8 +2074,29 @@ grilio_channel_release_id(
     if (G_LIKELY(self)) {
         GRilIoChannelPriv* priv = self->priv;
 
-        g_hash_table_remove(priv->gen_ids, GINT_TO_POINTER(id));
+        return g_hash_table_remove(priv->gen_ids, GINT_TO_POINTER(id));
     }
+    return FALSE;
+}
+
+guint
+grilio_channel_get_id_with_timeout(
+    GRilIoChannel* self,
+    guint timeout_ms,
+    GRilIoChannelIdCleanupFunc cleanup,
+    gpointer user_data)
+{
+    if (G_LIKELY(self)) {
+        GRilIoChannelPriv* priv = self->priv;
+        const guint id = grilio_channel_generate_id(priv);
+
+        g_hash_table_insert(priv->gen_ids, GINT_TO_POINTER(id),
+            grilio_channel_generic_id_data_new(priv, id, timeout_ms ?
+                timeout_ms : GRILIO_DEFAULT_PENDING_TIMEOUT_MS,
+                cleanup, user_data));
+        return id;
+    }
+    return 0;
 }
 
 /*==========================================================================*
@@ -2039,7 +2120,8 @@ grilio_channel_init(
         NULL, grilio_request_unref_proc);
     priv->timeout = GRILIO_TIMEOUT_NONE;
     priv->pending_timeout = GRILIO_DEFAULT_PENDING_TIMEOUT_MS;
-    priv->gen_ids = g_hash_table_new(g_direct_hash, g_direct_equal);
+    priv->gen_ids = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+        NULL, grilio_channel_generic_id_destroy);
 
     self->priv = priv;
     self->name = "RIL";

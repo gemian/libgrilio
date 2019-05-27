@@ -95,6 +95,13 @@ struct grilio_request {
 #define GRILIO_REQUEST_FLAG_NO_REPLY    (0x04)
 };
 
+typedef
+void
+(*GRilIoChannelIdCleanupFunc)(
+    guint id,
+    gboolean timeout,
+    gpointer user_data);
+
 G_GNUC_INTERNAL
 void
 grilio_request_unref_proc(
@@ -141,10 +148,18 @@ grilio_channel_get_id(
     GRilIoChannel* channel);
 
 G_GNUC_INTERNAL
-void
+gboolean
 grilio_channel_release_id(
     GRilIoChannel* channel,
     guint id);
+
+G_GNUC_INTERNAL
+guint
+grilio_channel_get_id_with_timeout(
+    GRilIoChannel* channel,
+    guint timeout_ms,
+    GRilIoChannelIdCleanupFunc cleanup,
+    gpointer user_data);
 
 G_INLINE_FUNC gboolean
 grilio_request_can_retry(GRilIoRequest* req)

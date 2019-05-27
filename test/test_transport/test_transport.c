@@ -69,6 +69,7 @@ test_basic(
     grilio_transport_set_name(NULL, NULL);
     grilio_transport_set_channel(NULL, NULL);
     g_assert(!grilio_transport_get_id(NULL));
+    g_assert(!grilio_transport_get_id_with_timeout(NULL, 0, NULL, NULL));
     grilio_transport_release_id(NULL, 0);
     g_assert(grilio_transport_send(NULL, NULL, 0) == GRILIO_SEND_ERROR);
     g_assert(grilio_transport_send(trans, NULL, 0) == GRILIO_SEND_ERROR);
@@ -96,6 +97,7 @@ test_basic(
 
     /* No id generator - no id */
     g_assert(!grilio_transport_get_id(trans));
+    g_assert(!grilio_transport_get_id_with_timeout(trans, 0, NULL, NULL));
     grilio_transport_release_id(trans, 0);
 
     g_assert(grilio_transport_ref(trans) == trans);
