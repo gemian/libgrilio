@@ -485,6 +485,9 @@ test_basic(
     g_assert(!grilio_channel_get_request(NULL, 0));
     g_assert(!grilio_channel_get_request(test->io, 0));
     g_assert(!grilio_channel_get_request(test->io, INT_MAX));
+    g_assert(!grilio_channel_release_id(NULL, 0));
+    g_assert(!grilio_channel_release_id(NULL, 1));
+    g_assert(!grilio_channel_release_id(test->io, 0));
     grilio_channel_inject_unsol_event(NULL, 0, NULL, 0);
 
     /* Id generation */

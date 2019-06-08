@@ -218,7 +218,7 @@ grilio_transport_release_id(
     GRilIoTransport* self,
     guint id) /* Since 1.0.28 */
 {
-    if (G_LIKELY(self)) {
+    if (G_LIKELY(self) && G_LIKELY(id)) {
         return grilio_channel_release_id(self->priv->channel, id);
     }
     return FALSE;
