@@ -1909,7 +1909,8 @@ grilio_channel_cancel_all(
         if (priv->send_req) {
             /* Current request will be unreferenced after it's sent */
             req = priv->send_req;
-            if (req->status != GRILIO_REQUEST_CANCELLED) {
+            if (req->status != GRILIO_REQUEST_DONE &&
+                req->status != GRILIO_REQUEST_CANCELLED) {
                 req->status = GRILIO_REQUEST_CANCELLED;
                 grilio_channel_remove_request(priv, req);
                 if (notify && req->response) {

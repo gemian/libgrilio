@@ -1384,6 +1384,94 @@ test_write_error3(
 }
 
 /*==========================================================================*
+ * WriteTimeout
+ *==========================================================================*/
+
+typedef struct test_write_timeout_data {
+    Test test;
+    gboolean req_destroyed;
+} TestWriteTimeout;
+
+static
+void
+test_write_timeout_req_destroyed(
+    gpointer user_data)
+{
+    TestWriteTimeout* data = G_CAST(user_data, TestWriteTimeout, test);
+
+    GDEBUG("Request destroyed");
+    g_assert(!data->req_destroyed);
+    data->req_destroyed = TRUE;
+}
+
+static
+void
+test_write_timeout_done(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+
+    g_assert(status == GRILIO_STATUS_TIMEOUT);
+    GDEBUG("Request timed out");
+    test->timeout_id = g_timeout_add_seconds(TEST_TIMEOUT,
+            test_timeout_expired, test);
+    g_main_loop_quit(test->loop);
+}
+
+static
+void
+test_write_timeout_connected(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestWriteTimeout* data = G_CAST(test, TestWriteTimeout, test);
+    GRilIoRequest* req = grilio_request_new();
+
+    /* This causes send to get stuck */
+    grilio_test_server_shutdown(test->server);
+    grilio_request_set_timeout(req, 10);
+    g_assert(grilio_channel_send_request_full(test->io, req,
+        RIL_REQUEST_TEST, test_write_timeout_done,
+        test_write_timeout_req_destroyed, test));
+    grilio_request_unref(req);
+    g_assert(!data->req_destroyed);
+}
+
+static
+void
+test_write_timeout(
+    void)
+{
+    TestWriteTimeout* data = test_new(TestWriteTimeout, "WriteTimeout");
+    Test* test = &data->test;
+
+    grilio_channel_add_connected_handler(test->io,
+        test_write_timeout_connected, test);
+    g_main_loop_run(test->loop);
+
+    /* It's stuck, so it's not destroyed yet */
+    g_assert(!data->req_destroyed);
+
+    /* Even grilio_channel_cancel_all won't destroy it */
+    grilio_channel_cancel_all(test->io, FALSE);
+    g_assert(!data->req_destroyed);
+
+    /* Only this will */
+    grilio_channel_unref(test->io);
+    grilio_transport_unref(test->transport);
+    g_assert(data->req_destroyed);
+    test->transport = NULL;
+    test->io = NULL;
+
+    test_free(test);
+}
+
+/*==========================================================================*
  * Disconnect
  *==========================================================================*/
 
@@ -3680,6 +3768,7 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "WriteError1", test_write_error1);
     g_test_add_func(TEST_PREFIX "WriteError2", test_write_error2);
     g_test_add_func(TEST_PREFIX "WriteError3", test_write_error3);
+    g_test_add_func(TEST_PREFIX "WriteTimeout", test_write_timeout);
     g_test_add_func(TEST_PREFIX "Disconnect", test_disconnect);
     g_test_add_func(TEST_PREFIX "ShortPacket", test_short_packet);
     g_test_add_func(TEST_PREFIX "ShortResponse", test_short_response);
