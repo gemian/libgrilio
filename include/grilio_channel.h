@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2015-2018 Jolla Ltd.
- * Contact: Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2015-2019 Jolla Ltd.
+ * Copyright (C) 2015-2019 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -13,9 +13,9 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of Jolla Ltd nor the names of its contributors may
- *      be used to endorse or promote products derived from this software
- *      without specific prior written permission.
+ *   3. Neither the names of the copyright holders nor the names of its
+ *      contributors may be used to endorse or promote products derived
+ *      from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -47,6 +47,8 @@ struct grilio_channel {
     const char* name;
     gboolean connected;
     guint ril_version;
+    /* Since 1.0.35 */
+    gboolean enabled;
 };
 
 /* Status values for GRilIoResponseFunc. Zero means success,
@@ -137,16 +139,21 @@ grilio_channel_set_name(
 
 guint
 grilio_channel_serialize(
-    GRilIoChannel* self);
+    GRilIoChannel* channel);
 
 void
 grilio_channel_deserialize(
-    GRilIoChannel* self,
+    GRilIoChannel* channel,
     guint id);
 
 gboolean
 grilio_channel_has_pending_requests(
-    GRilIoChannel* self);
+    GRilIoChannel* channel);
+
+void
+grilio_channel_set_enabled(
+    GRilIoChannel* channel,
+    gboolean enabled); /* Since 1.0.35 */
 
 guint
 grilio_channel_add_logger(
@@ -157,14 +164,12 @@ grilio_channel_add_logger(
 /*
  * Logger callbacks registered with grilio_channel_add_logger2 only receive
  * packet payload, without the header. It's more efficient.
- *
- * Since 1.0.25
  */
 guint
 grilio_channel_add_logger2(
     GRilIoChannel* channel,
     GrilIoChannelLogFunc log,
-    void* user_data);
+    void* user_data); /* Since 1.0.25 */
 
 guint
 grilio_channel_add_default_logger(
@@ -212,6 +217,12 @@ grilio_channel_add_pending_changed_handler(
     GRilIoChannel* channel,
     GRilIoChannelEventFunc func,
     void* arg);
+
+gulong
+grilio_channel_add_enabled_changed_handler(
+    GRilIoChannel* channel,
+    GRilIoChannelEventFunc func,
+    void* arg); /* Since 1.0.35 */
 
 void
 grilio_channel_remove_handler(
@@ -265,10 +276,10 @@ grilio_channel_drop_request(
 
 void
 grilio_channel_inject_unsol_event(
-    GRilIoChannel* self,
+    GRilIoChannel* channel,
     guint code,
     const void* data,
-    guint len);
+    guint len); /* Since 1.0.21 */
 
 G_END_DECLS
 

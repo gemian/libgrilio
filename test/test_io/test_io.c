@@ -531,6 +531,45 @@ test_basic(
 }
 
 /*==========================================================================*
+ * Enabled
+ *==========================================================================*/
+
+static
+void
+test_enabled(
+    void)
+{
+    Test* test = test_new(Test, "Enabled");
+    int event_count = 0;
+    gulong id;
+
+    /* Verify NULL tolerance */
+    grilio_channel_set_enabled(NULL, FALSE);
+    g_assert(!grilio_channel_add_enabled_changed_handler(NULL, NULL, NULL));
+    g_assert(!grilio_channel_add_enabled_changed_handler(test->io, NULL, NULL));
+
+    /* By default channel is enabled */
+    g_assert(test->io->enabled == TRUE);
+
+    /* Register the change handler */
+    id = grilio_channel_add_enabled_changed_handler(test->io,
+        test_basic_inc, &event_count);
+    g_assert(id);
+
+    /* Setting it to the same value won't generate the event */
+    grilio_channel_set_enabled(test->io, TRUE);
+    g_assert(!event_count);
+
+    /* But setting it to FALSE does generate one */
+    grilio_channel_set_enabled(test->io, FALSE);
+    g_assert(!test->io->enabled);
+    g_assert(event_count == 1);
+
+    grilio_channel_remove_handler(test->io, id);
+    test_free(test);
+}
+
+/*==========================================================================*
  * Inject
  *==========================================================================*/
 
@@ -3760,6 +3799,7 @@ int main(int argc, char* argv[])
     g_test_add_func(TEST_PREFIX "Connected", test_connected);
     g_test_add_func(TEST_PREFIX "IdTimeout", test_id_timeout);
     g_test_add_func(TEST_PREFIX "Basic", test_basic);
+    g_test_add_func(TEST_PREFIX "Enabled", test_enabled);
     g_test_add_func(TEST_PREFIX "Inject", test_inject);
     g_test_add_func(TEST_PREFIX "Queue", test_queue);
     g_test_add_func(TEST_PREFIX "AsyncWrite", test_async_write);
