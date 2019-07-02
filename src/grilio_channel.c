@@ -121,6 +121,7 @@ enum grilio_channel_signal {
     SIGNAL_EOF,
     SIGNAL_OWNER,
     SIGNAL_PENDING,
+    SIGNAL_ENABLED,
     SIGNAL_COUNT
 };
 
@@ -130,11 +131,16 @@ enum grilio_channel_signal {
 #define SIGNAL_EOF_NAME         "grilio-eof"
 #define SIGNAL_OWNER_NAME       "grilio-owner"
 #define SIGNAL_PENDING_NAME     "grilio-pending"
+#define SIGNAL_ENABLED_NAME     "grilio-enabled"
 
 #define SIGNAL_UNSOL_EVENT_DETAIL_FORMAT        "%x"
 #define SIGNAL_UNSOL_EVENT_DETAIL_MAX_LENGTH    (8)
 
 static guint grilio_channel_signals[SIGNAL_COUNT] = { 0 };
+
+#define NEW_SIGNAL_NO_ARGS(type,X) \
+    grilio_channel_signals[SIGNAL_##X] = g_signal_new(SIGNAL_##X##_NAME, \
+        type, G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0)
 
 struct grilio_channel_event {
     GrilIoChannelEvent* next;
@@ -1460,6 +1466,17 @@ grilio_channel_has_pending_requests(
     return G_LIKELY(self) && g_hash_table_size(self->priv->pending) > 0;
 }
 
+void
+grilio_channel_set_enabled(
+    GRilIoChannel* self,
+    gboolean enabled) /* Since 1.0.35 */
+{
+    if (self && self->enabled != enabled) {
+        self->enabled = enabled;
+        g_signal_emit(self, grilio_channel_signals[SIGNAL_ENABLED], 0);
+    }
+}
+
 gulong
 grilio_channel_add_connected_handler(
     GRilIoChannel* self,
@@ -1533,6 +1550,16 @@ grilio_channel_add_pending_changed_handler(
 {
     return (G_LIKELY(self) && G_LIKELY(func)) ? g_signal_connect(self,
         SIGNAL_PENDING_NAME, G_CALLBACK(func), arg) : 0;
+}
+
+gulong
+grilio_channel_add_enabled_changed_handler(
+    GRilIoChannel* self,
+    GRilIoChannelEventFunc func,
+    void* arg) /* Since 1.0.35 */
+{
+    return (G_LIKELY(self) && G_LIKELY(func)) ? g_signal_connect(self,
+        SIGNAL_ENABLED_NAME, G_CALLBACK(func), arg) : 0;
 }
 
 void
@@ -2126,6 +2153,7 @@ grilio_channel_init(
 
     self->priv = priv;
     self->name = "RIL";
+    self->enabled = TRUE;
 }
 
 /**
@@ -2195,30 +2223,24 @@ grilio_channel_class_init(
     GRilIoChannelClass* klass)
 {
     GObjectClass* object_class = G_OBJECT_CLASS(klass);
+    GType type = G_OBJECT_CLASS_TYPE(klass);
 
     object_class->dispose = grilio_channel_dispose;
     object_class->finalize = grilio_channel_finalize;
     g_type_class_add_private(klass, sizeof(GRilIoChannelPriv));
-    grilio_channel_signals[SIGNAL_CONNECTED] =
-        g_signal_new(SIGNAL_CONNECTED_NAME, G_OBJECT_CLASS_TYPE(klass),
-            G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+    NEW_SIGNAL_NO_ARGS(type, CONNECTED);
     grilio_channel_signals[SIGNAL_UNSOL_EVENT] =
-        g_signal_new(SIGNAL_UNSOL_EVENT_NAME, G_OBJECT_CLASS_TYPE(klass),
+        g_signal_new(SIGNAL_UNSOL_EVENT_NAME, type,
             G_SIGNAL_RUN_FIRST | G_SIGNAL_DETAILED, 0, NULL, NULL, NULL,
             G_TYPE_NONE, 3, G_TYPE_UINT, G_TYPE_POINTER, G_TYPE_UINT);
     grilio_channel_signals[SIGNAL_ERROR] =
-        g_signal_new(SIGNAL_ERROR_NAME, G_OBJECT_CLASS_TYPE(klass),
+        g_signal_new(SIGNAL_ERROR_NAME, type,
             G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL,
             G_TYPE_NONE, 1, G_TYPE_ERROR);
-    grilio_channel_signals[SIGNAL_EOF] =
-        g_signal_new(SIGNAL_EOF_NAME, G_OBJECT_CLASS_TYPE(klass),
-            G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
-    grilio_channel_signals[SIGNAL_OWNER] =
-        g_signal_new(SIGNAL_OWNER_NAME, G_OBJECT_CLASS_TYPE(klass),
-            G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
-    grilio_channel_signals[SIGNAL_PENDING] =
-        g_signal_new(SIGNAL_PENDING_NAME, G_OBJECT_CLASS_TYPE(klass),
-            G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+    NEW_SIGNAL_NO_ARGS(type, EOF);
+    NEW_SIGNAL_NO_ARGS(type, OWNER);
+    NEW_SIGNAL_NO_ARGS(type, PENDING);
+    NEW_SIGNAL_NO_ARGS(type, ENABLED);
 }
 
 /*
