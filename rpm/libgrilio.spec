@@ -1,10 +1,10 @@
 Name: libgrilio
-Version: 1.0.34
+Version: 1.0.35
 Release: 0
 Summary: RIL I/O library
 Group: Development/Libraries
 License: BSD
-URL: https://git.merproject.org/mer-core/libgrilio
+URL: https://git.sailfishos.org/mer-core/libgrilio
 Source: %{name}-%{version}.tar.bz2
 Requires: libglibutil >= 1.0.10
 BuildRequires: pkgconfig(glib-2.0)

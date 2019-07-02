@@ -1,3 +1,9 @@
+libgrilio (1.0.35) unstable; urgency=low
+
+  * Added enabled attribute to GRilIoChannel
+
+ -- Slava Monich <slava.monich@jolla.com>  Tue, 02 Jul 2019 13:23:02 +0300
+
 libgrilio (1.0.34) unstable; urgency=low
 
   * Handle requests stuck in the process of being sent
