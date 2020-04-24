@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
- * Contact: Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2015-2019 Jolla Ltd.
+ * Copyright (C) 2015-2019 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -13,9 +13,9 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of Jolla Ltd nor the names of its contributors may
- *      be used to endorse or promote products derived from this software
- *      without specific prior written permission.
+ *   3. Neither the names of the copyright holders nor the names of its
+ *      contributors may be used to endorse or promote products derived
+ *      from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -41,11 +41,12 @@
 #define GUINT32_FROM_RIL(x) (x) /* GUINT32_FROM_LE(x) ? */
 #define GUINT32_TO_RIL(x)   (x) /* GUINT32_TO_LE(x) ? */
 
-/* RIL constants */
-#define RIL_REQUEST_HEADER_SIZE (12)
-#define RIL_RESPONSE_HEADER_SIZE (12)
-#define RIL_UNSOL_HEADER_SIZE (8)
-#define RIL_MIN_HEADER_SIZE RIL_UNSOL_HEADER_SIZE
+/* RIL constants (for legacy loggers and socket transport) */
+#define RIL_REQUEST_HEADER_SIZE (8)    /* code, id */
+#define RIL_RESPONSE_HEADER_SIZE (12)  /* type, id, status */
+#define RIL_ACK_HEADER_SIZE (8)        /* type, id */
+#define RIL_UNSOL_HEADER_SIZE (8)      /* type, code */
+#define RIL_MAX_HEADER_SIZE (12)
 
 #define RIL_RESPONSE_ACKNOWLEDGEMENT (800)
 #define RIL_UNSOL_RIL_CONNECTED (1034)
@@ -94,38 +95,71 @@ struct grilio_request {
 #define GRILIO_REQUEST_FLAG_NO_REPLY    (0x04)
 };
 
+typedef
+void
+(*GRilIoChannelIdCleanupFunc)(
+    guint id,
+    gboolean timeout,
+    gpointer user_data);
+
+G_GNUC_INTERNAL
 void
 grilio_request_unref_proc(
     gpointer data);
 
+G_GNUC_INTERNAL
 void
 grilio_queue_remove(
     GRilIoRequest* req);
 
+G_GNUC_INTERNAL
 GRilIoRequest*
 grilio_channel_get_request(
     GRilIoChannel* channel,
     guint id);
 
+G_GNUC_INTERNAL
 void
 grilio_channel_set_pending_timeout(
     GRilIoChannel* channel,
     int ms);
 
+G_GNUC_INTERNAL
 GRILIO_TRANSACTION_STATE
 grilio_channel_transaction_start(
     GRilIoChannel* channel,
     GRilIoQueue* queue);
 
+G_GNUC_INTERNAL
 GRILIO_TRANSACTION_STATE
 grilio_channel_transaction_state(
     GRilIoChannel* channel,
     GRilIoQueue* queue);
 
+G_GNUC_INTERNAL
 void
 grilio_channel_transaction_finish(
     GRilIoChannel* channel,
     GRilIoQueue* queue);
+
+G_GNUC_INTERNAL
+guint
+grilio_channel_get_id(
+    GRilIoChannel* channel);
+
+G_GNUC_INTERNAL
+gboolean
+grilio_channel_release_id(
+    GRilIoChannel* channel,
+    guint id);
+
+G_GNUC_INTERNAL
+guint
+grilio_channel_get_id_with_timeout(
+    GRilIoChannel* channel,
+    guint timeout_ms,
+    GRilIoChannelIdCleanupFunc cleanup,
+    gpointer user_data);
 
 G_INLINE_FUNC gboolean
 grilio_request_can_retry(GRilIoRequest* req)

@@ -1,3 +1,82 @@
+libgrilio (1.0.36) unstable; urgency=low
+
+  * Allow use of CC defined by build system
+
+ -- Slava Monich <slava.monich@jolla.com>  Tue, 27 Aug 2019 23:29:04 +0300
+
+libgrilio (1.0.35) unstable; urgency=low
+
+  * Added enabled attribute to GRilIoChannel
+
+ -- Slava Monich <slava.monich@jolla.com>  Tue, 02 Jul 2019 13:23:02 +0300
+
+libgrilio (1.0.34) unstable; urgency=low
+
+  * Handle requests stuck in the process of being sent
+
+ -- Slava Monich <slava.monich@jolla.com>  Tue, 11 Jun 2019 14:49:45 +0300
+
+libgrilio (1.0.33) unstable; urgency=low
+
+  * Ignore zero id in grilio_transport_release_id()
+
+ -- Slava Monich <slava.monich@jolla.com>  Sat, 08 Jun 2019 13:31:55 +0300
+
+libgrilio (1.0.32) unstable; urgency=low
+
+  * Added grilio_transport_get_id_with_timeout()
+  * Changed grilio_transport_release_id() return value from void to boolean
+
+ -- Slava Monich <slava.monich@jolla.com>  Mon, 27 May 2019 17:27:40 +0300
+
+libgrilio (1.0.31) unstable; urgency=low
+
+  * Destroy transport before everything else
+  * Prevent crash in timeout routine
+
+ -- Slava Monich <slava.monich@jolla.com>  Thu, 09 May 2019 17:08:08 +0300
+
+libgrilio (1.0.30) unstable; urgency=low
+
+  * Added set_channel callback to GRilIoTransportClass
+
+ -- Slava Monich <slava.monich@jolla.com>  Thu, 18 Apr 2019 11:42:21 +0300
+
+libgrilio (1.0.29) unstable; urgency=low
+
+  * Fixed a problem with acks never being freed until exit
+
+ -- Slava Monich <slava.monich@jolla.com>  Tue, 16 Apr 2019 13:29:04 +0300
+
+libgrilio (1.0.28) unstable; urgency=low
+
+  * Added grilio_transport_get_id
+  * Added grilio_transport_release_id
+
+ -- Slava Monich <slava.monich@jolla.com>  Mon, 15 Apr 2019 13:45:45 +0300
+
+libgrilio (1.0.27) unstable; urgency=low
+
+  * Expose GRilIoTransport object macros
+
+ -- Slava Monich <slava.monich@jolla.com>  Fri, 22 Feb 2019 12:42:16 +0200
+
+libgrilio (1.0.26) unstable; urgency=low
+
+  * Moved private GRilIoTransport API to src
+
+ -- Slava Monich <slava.monich@jolla.com>  Fri, 18 Jan 2019 01:48:20 +0200
+
+libgrilio (1.0.25) unstable; urgency=low
+
+  * Introduced GRilIoTransport interface
+  * Added grilio_parser_get_nullable_utf8
+  * Added grilio_channel_add_logger2
+  * Added grilio_request_serial
+  * Added grilio_encode_xxx API
+
+ -- Slava Monich <slava.monich@jolla.com>  Fri, 13 Jul 2018 13:53:38 +0300
+
 libgrilio (1.0.24+gemian1) buster; urgency=medium
 
   * Branched for Gemian

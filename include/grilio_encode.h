@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -30,45 +30,69 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef GRILIO_TYPES_H
-#define GRILIO_TYPES_H
+#ifndef GRILIO_ENCODE_H
+#define GRILIO_ENCODE_H
 
-#include <gutil_types.h>
+#include "grilio_types.h"
+
+/* Introduced in version 1.0.25 */
 
 G_BEGIN_DECLS
 
-#define GRILIO_LOG_MODULE grilio_log
-#define GRILIO_HEXDUMP_LOG_MODULE grilio_hexdump_log
-extern GLogModule GRILIO_LOG_MODULE;
-extern GLogModule GRILIO_HEXDUMP_LOG_MODULE;
+GByteArray*
+grilio_encode_byte(
+    GByteArray* dest,
+    guchar value);
 
-typedef struct grilio_channel GRilIoChannel;
-typedef struct grilio_parser GRilIoParser;
-typedef struct grilio_queue GRilIoQueue;
-typedef struct grilio_request GRilIoRequest;
-typedef struct grilio_transport GRilIoTransport;
+GByteArray*
+grilio_encode_bytes(
+    GByteArray* dest,
+    const void* data,
+    guint len);
 
-typedef enum grilio_transaction_state {
-    GRILIO_TRANSACTION_NONE,
-    GRILIO_TRANSACTION_QUEUED,
-    GRILIO_TRANSACTION_STARTED
-} GRILIO_TRANSACTION_STATE;
+GByteArray*
+grilio_encode_int32(
+    GByteArray* dest,
+    guint32 value);
 
-typedef enum grilio_packet_type {
-    GRILIO_PACKET_REQ,
-    GRILIO_PACKET_RESP,
-    GRILIO_PACKET_UNSOL,
-    GRILIO_PACKET_ACK,
-    GRILIO_PACKET_RESP_ACK_EXP,
-    GRILIO_PACKET_UNSOL_ACK_EXP
-} GRILIO_PACKET_TYPE;
+GByteArray*
+grilio_encode_int32_values(
+    GByteArray* dest,
+    const gint32* values,
+    guint count);
 
-#define GRILIO_TIMEOUT_NONE     (0)     /* Infinite timeout */
-#define GRILIO_TIMEOUT_DEFAULT  (-1)
+GByteArray*
+grilio_encode_uint32_values(
+    GByteArray* dest,
+    const guint32* values,
+    guint count);
+
+GByteArray*
+grilio_encode_utf8(
+    GByteArray* dest,
+    const char* utf8);
+
+GByteArray*
+grilio_encode_utf8_chars(
+    GByteArray* dest,
+    const char* utf8,
+    gssize num_bytes);
+
+GByteArray*
+grilio_encode_format(
+    GByteArray* dest,
+    const char* format,
+    ...) G_GNUC_PRINTF(2,3);
+
+GByteArray*
+grilio_encode_format_va(
+    GByteArray* dest,
+    const char* format,
+    va_list va);
 
 G_END_DECLS
 
-#endif /* GRILIO_TYPES_H */
+#endif /* GRILIO_ENCODE_H */
 
 /*
  * Local Variables:

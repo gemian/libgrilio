@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2015-2018 Jolla Ltd.
- * Contact: Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2015-2019 Jolla Ltd.
+ * Copyright (C) 2015-2019 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -13,9 +13,9 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of Jolla Ltd nor the names of its contributors may
- *      be used to endorse or promote products derived from this software
- *      without specific prior written permission.
+ *   3. Neither the names of the copyright holders nor the names of its
+ *      contributors may be used to endorse or promote products derived
+ *      from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -38,6 +38,8 @@
 #include "grilio_queue.h"
 
 #include "grilio_test_server.h"
+#include "grilio_transport_p.h"
+#include "grilio_transport_impl.h"
 #include "grilio_p.h"
 
 #include <gutil_log.h>
@@ -55,12 +57,15 @@
 #define RIL_E_GENERIC_FAILURE 2
 #define RIL_E_REQUEST_NOT_SUPPORTED 6
 
+#define RIL_UNSOL_RIL_CONNECTED (1034)
+
 static TestOpt test_opt;
 
 typedef struct test_common_data {
     const char* name;
     GMainLoop* loop;
     GRilIoTestServer* server;
+    GRilIoTransport* transport;
     GRilIoChannel* io;
     guint timeout_id;
     guint log;
@@ -104,7 +109,7 @@ test_response_empty_ok_ack(
     void* user_data)
 {
     Test* test = user_data;
-    grilio_test_server_add_ack(test->server, NULL, id);
+    grilio_test_server_add_ack(test->server, id);
     grilio_test_server_add_response_ack_exp_data(test->server, id,
         GRILIO_STATUS_OK, NULL, 0);
 }
@@ -124,19 +129,33 @@ test_response_reflect_ok(
 }
 
 static
+void
+test_response_quit(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+    g_main_loop_quit(test->loop);
+}
+
+static
 void*
 test_alloc(
     const char* name,
     gsize size)
 {
     Test* test = g_malloc0(size);
-    GRilIoTestServer* server = grilio_test_server_new();
+    GRilIoTestServer* server = grilio_test_server_new(TRUE);
     int fd = grilio_test_server_fd(server);
     memset(test, 0, sizeof(*test));
     test->name = name;
     test->loop = g_main_loop_new(NULL, FALSE);
     test->server = server;
-    test->io = grilio_channel_new_fd(fd, "SUB1", FALSE);
+    test->transport = grilio_transport_socket_new(fd, "SUB1", FALSE);
+    test->io = grilio_channel_new(test->transport);
     grilio_channel_set_name(test->io, "TEST");
     test->log = grilio_channel_add_default_logger(test->io, GLOG_LEVEL_VERBOSE);
     if (!(test_opt.flags & TEST_FLAG_DEBUG)) {
@@ -153,15 +172,10 @@ test_free(
 {
     g_assert((test_opt.flags & TEST_FLAG_DEBUG) || test->timeout_id);
     if (test->timeout_id) g_source_remove(test->timeout_id);
-    /* These function should handle NULL arguments */
-    grilio_channel_remove_logger(NULL, 0);
-    grilio_channel_shutdown(NULL, FALSE);
-    grilio_channel_unref(NULL);
-    /* Remove logger twice, the second call should do nothing */
-    grilio_channel_remove_logger(test->io, test->log);
     grilio_channel_remove_logger(test->io, test->log);
     grilio_channel_shutdown(test->io, FALSE);
     grilio_channel_unref(test->io);
+    grilio_transport_unref(test->transport);
     g_main_loop_unref(test->loop);
     grilio_test_server_free(test->server);
     g_free(test);
@@ -264,6 +278,53 @@ test_connected(
 }
 
 /*==========================================================================*
+ * IdTimeout
+ *==========================================================================*/
+
+static
+void
+test_id_timeout_1(
+    guint id,
+    gboolean timeout,
+    gpointer user_data)
+{
+    g_assert(timeout);
+    (*((int*)user_data))++;
+}
+
+static
+void
+test_id_timeout_2(
+    guint id,
+    gboolean timeout,
+    gpointer user_data)
+{
+    g_assert(timeout);
+    g_main_loop_quit(user_data);
+}
+
+static
+void
+test_id_timeout(
+    void)
+{
+    Test* test = test_new(Test, "IdTimeout");
+    int count = 0;
+    guint id1 = grilio_transport_get_id_with_timeout(test->transport, 10,
+        test_id_timeout_1, &count);
+    guint id2 = grilio_transport_get_id_with_timeout(test->transport, 20,
+        test_id_timeout_2, test->loop);
+
+    g_main_loop_run(test->loop);
+    g_assert(count == 1);
+
+    /* Nothing to release anymore */
+    g_assert(!grilio_transport_release_id(test->transport, id1));
+    g_assert(!grilio_transport_release_id(test->transport, id2));
+    test_free(test);
+}
+
+/*==========================================================================*
  * Basic
  *==========================================================================*/
 
@@ -314,6 +375,23 @@ test_basic_request(
 }
 
 static
+guint
+test_basic_request_full(
+    Test* test,
+    guint code,
+    const void* data,
+    guint len,
+    GRilIoChannelResponseFunc fn)
+{
+    guint id;
+    GRilIoRequest* req = grilio_request_new();
+    grilio_request_append_bytes(req, data, len);
+    id = grilio_channel_send_request_full(test->io, req, code, fn, NULL, test);
+    grilio_request_unref(req);
+    return id;
+}
+
+static
 gboolean
 test_basic_response_ok(
     GRilIoTestServer* server,
@@ -324,6 +402,23 @@ test_basic_response_ok(
         GRilIoRequest* resp = grilio_request_new();
         grilio_request_append_utf8(resp, data);
         grilio_test_server_add_response(server, resp, id, 0);
+        grilio_request_unref(resp);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static
+gboolean
+test_basic_response_ok_ack_exp(
+    GRilIoTestServer* server,
+    const char* data,
+    guint id)
+{
+    if (id) {
+        GRilIoRequest* resp = grilio_request_new();
+        grilio_request_append_utf8(resp, data);
+        grilio_test_server_add_response_ack_exp(server, resp, id, 0);
         grilio_request_unref(resp);
         return TRUE;
     }
@@ -359,6 +454,11 @@ test_basic(
 
     /* Test NULL resistance */
     g_assert(!grilio_request_retry_count(NULL));
+    g_assert(!grilio_channel_new(NULL));
+    g_assert(!grilio_channel_new_fd(-1, NULL, FALSE));
+    g_assert(!grilio_channel_ref(NULL));
+    grilio_channel_unref(NULL);
+    grilio_channel_shutdown(NULL, FALSE);
     grilio_channel_set_name(NULL, NULL);
     grilio_request_set_retry(NULL, 0, 0);
     grilio_request_set_retry_func(NULL, NULL);
@@ -385,7 +485,21 @@ test_basic(
     g_assert(!grilio_channel_get_request(NULL, 0));
     g_assert(!grilio_channel_get_request(test->io, 0));
     g_assert(!grilio_channel_get_request(test->io, INT_MAX));
+    g_assert(!grilio_channel_release_id(NULL, 0));
+    g_assert(!grilio_channel_release_id(NULL, 1));
+    g_assert(!grilio_channel_release_id(test->io, 0));
     grilio_channel_inject_unsol_event(NULL, 0, NULL, 0);
+
+    /* Id generation */
+    id = grilio_transport_get_id(test->transport);
+    g_assert(id);
+    g_assert(grilio_transport_release_id(test->transport, id));
+    g_assert(!grilio_transport_release_id(test->transport, id));
+
+    id = grilio_transport_get_id_with_timeout(test->transport, 0, NULL, NULL);
+    g_assert(id);
+    g_assert(grilio_transport_release_id(test->transport, id));
+    g_assert(!grilio_transport_release_id(test->transport, id));
 
     /* Test send/cancel before we are connected to the server. */
     id = grilio_channel_send_request(test->io, NULL, 0);
@@ -413,6 +527,45 @@ test_basic(
     g_assert(pending_event_count > 0);
     grilio_channel_remove_handler(test->io, pending_id);
     grilio_request_unref(req);
+    test_free(test);
+}
+
+/*==========================================================================*
+ * Enabled
+ *==========================================================================*/
+
+static
+void
+test_enabled(
+    void)
+{
+    Test* test = test_new(Test, "Enabled");
+    int event_count = 0;
+    gulong id;
+
+    /* Verify NULL tolerance */
+    grilio_channel_set_enabled(NULL, FALSE);
+    g_assert(!grilio_channel_add_enabled_changed_handler(NULL, NULL, NULL));
+    g_assert(!grilio_channel_add_enabled_changed_handler(test->io, NULL, NULL));
+
+    /* By default channel is enabled */
+    g_assert(test->io->enabled == TRUE);
+
+    /* Register the change handler */
+    id = grilio_channel_add_enabled_changed_handler(test->io,
+        test_basic_inc, &event_count);
+    g_assert(id);
+
+    /* Setting it to the same value won't generate the event */
+    grilio_channel_set_enabled(test->io, TRUE);
+    g_assert(!event_count);
+
+    /* But setting it to FALSE does generate one */
+    grilio_channel_set_enabled(test->io, FALSE);
+    g_assert(!test->io->enabled);
+    g_assert(event_count == 1);
+
+    grilio_channel_remove_handler(test->io, id);
     test_free(test);
 }
 
@@ -765,6 +918,106 @@ test_queue(
 }
 
 /*==========================================================================*
+ * AsyncWrite
+ *==========================================================================*/
+
+typedef struct test_async_write_data {
+    Test test;
+    GRilIoRequest* async_req;
+    int submitted;
+    int completed;
+} TestAsyncWrite;
+
+static
+void
+test_async_write_req_done(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestAsyncWrite* t = user_data;
+
+    t->completed++;
+    GDEBUG("Request #%d completion status %d", t->completed, status);
+    g_assert(status == GRILIO_STATUS_OK);
+    g_assert(t->completed <= t->submitted);
+    if (t->completed == t->submitted) {
+        g_main_loop_quit(t->test.loop);
+    }
+}
+
+static
+void
+test_async_write_req_sent(
+    GRilIoTransport* transport,
+    GRilIoRequest* req,
+    void* user_data)
+{
+    TestAsyncWrite* t = user_data;
+
+    GDEBUG("Request %d has been sent", grilio_request_id(req));
+    g_assert(t->async_req);
+    g_assert(req == t->async_req);
+    grilio_request_unref(t->async_req);
+    t->async_req = NULL;
+}
+
+static
+void
+test_async_write_connected(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    TestAsyncWrite* t = user_data;
+    Test* test = &t->test;
+
+    GDEBUG("Connected");
+
+    /* Loop until the socket buffer fills up */
+    do {
+        GRilIoRequest* req = grilio_request_new();
+        grilio_channel_send_request_full(test->io, req, RIL_REQUEST_TEST,
+            test_async_write_req_done, NULL, t);
+
+        t->submitted++;
+        if (grilio_request_status(req) == GRILIO_REQUEST_SENDING) {
+            /* The buffer is full */
+            GDEBUG("Request %d pending", grilio_request_id(req));
+            t->async_req = req;
+        } else {
+            g_assert(grilio_request_status(req) == GRILIO_REQUEST_SENT);
+            grilio_request_unref(req);
+        }
+    } while (!t->async_req);
+
+    GDEBUG("%d requests submitted", t->submitted);
+}
+
+static
+void
+test_async_write(
+    void)
+{
+    TestAsyncWrite* t = test_new(TestAsyncWrite, "AsyncWrite");
+    Test* test = &t->test;
+
+    grilio_channel_add_connected_handler(test->io,
+        test_async_write_connected, t);
+    grilio_transport_add_request_sent_handler(test->transport,
+        test_async_write_req_sent, t);
+    grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST,
+        test_response_empty_ok, test);
+
+    /* Run the test */
+    g_main_loop_run(test->loop);
+
+    g_assert(!t->async_req);
+    test_free(test);
+}
+
+/*==========================================================================*
  * Transaction1
  *==========================================================================*/
 
@@ -924,7 +1177,8 @@ test_transaction2_txreq1_resp(
     g_assert(grilio_request_status(t->req1) == GRILIO_REQUEST_DONE);
     g_assert(grilio_request_status(t->req2) == GRILIO_REQUEST_QUEUED);
     g_assert(grilio_request_status(t->txreq1) == GRILIO_REQUEST_SENT);
-    g_assert(grilio_request_status(t->txreq2) == GRILIO_REQUEST_QUEUED);
+    g_assert(grilio_request_status(t->txreq2) == GRILIO_REQUEST_QUEUED ||
+             grilio_request_status(t->txreq2) == GRILIO_REQUEST_SENT);
     g_assert(grilio_queue_transaction_state(t->q) ==
         GRILIO_TRANSACTION_STARTED);
     grilio_test_server_add_response_data(t->test.server, id,
@@ -1169,6 +1423,94 @@ test_write_error3(
 }
 
 /*==========================================================================*
+ * WriteTimeout
+ *==========================================================================*/
+
+typedef struct test_write_timeout_data {
+    Test test;
+    gboolean req_destroyed;
+} TestWriteTimeout;
+
+static
+void
+test_write_timeout_req_destroyed(
+    gpointer user_data)
+{
+    TestWriteTimeout* data = G_CAST(user_data, TestWriteTimeout, test);
+
+    GDEBUG("Request destroyed");
+    g_assert(!data->req_destroyed);
+    data->req_destroyed = TRUE;
+}
+
+static
+void
+test_write_timeout_done(
+    GRilIoChannel* io,
+    int status,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    Test* test = user_data;
+
+    g_assert(status == GRILIO_STATUS_TIMEOUT);
+    GDEBUG("Request timed out");
+    test->timeout_id = g_timeout_add_seconds(TEST_TIMEOUT,
+            test_timeout_expired, test);
+    g_main_loop_quit(test->loop);
+}
+
+static
+void
+test_write_timeout_connected(
+    GRilIoChannel* io,
+    void* user_data)
+{
+    Test* test = user_data;
+    TestWriteTimeout* data = G_CAST(test, TestWriteTimeout, test);
+    GRilIoRequest* req = grilio_request_new();
+
+    /* This causes send to get stuck */
+    grilio_test_server_shutdown(test->server);
+    grilio_request_set_timeout(req, 10);
+    g_assert(grilio_channel_send_request_full(test->io, req,
+        RIL_REQUEST_TEST, test_write_timeout_done,
+        test_write_timeout_req_destroyed, test));
+    grilio_request_unref(req);
+    g_assert(!data->req_destroyed);
+}
+
+static
+void
+test_write_timeout(
+    void)
+{
+    TestWriteTimeout* data = test_new(TestWriteTimeout, "WriteTimeout");
+    Test* test = &data->test;
+
+    grilio_channel_add_connected_handler(test->io,
+        test_write_timeout_connected, test);
+    g_main_loop_run(test->loop);
+
+    /* It's stuck, so it's not destroyed yet */
+    g_assert(!data->req_destroyed);
+
+    /* Even grilio_channel_cancel_all won't destroy it */
+    grilio_channel_cancel_all(test->io, FALSE);
+    g_assert(!data->req_destroyed);
+
+    /* Only this will */
+    grilio_channel_unref(test->io);
+    grilio_transport_unref(test->transport);
+    g_assert(data->req_destroyed);
+    test->transport = NULL;
+    test->io = NULL;
+
+    test_free(test);
+}
+
+/*==========================================================================*
  * Disconnect
  *==========================================================================*/
 
@@ -1287,11 +1629,124 @@ test_short_response2(
  * Logger
  *==========================================================================*/
 
+typedef struct test_logger_packet {
+    GRILIO_PACKET_TYPE type;
+    guint code;
+    const guint8* data;
+    guint len;
+    guint header_len;
+} TestLoggerPacket;
+
+#define TEST_LOGGER_DATA 0x01, 0x02, 0x03
+
+static const guint8 test_logger_packet_1[] = {
+    TEST_INT32_BYTES(RIL_PACKET_TYPE_UNSOLICITED),          /* type */
+    TEST_INT32_BYTES(RIL_UNSOL_RIL_CONNECTED),              /* id */
+    TEST_INT32_BYTES(1),
+    TEST_INT32_BYTES(GRILIO_RIL_VERSION)
+};
+static const guint8 test_logger_packet_2[] = {
+    TEST_INT32_BYTES(RIL_REQUEST_TEST),                     /* code */
+    TEST_INT32_BYTES(1)                                     /* id */
+};
+static const guint8 test_logger_packet_3[] = {
+    TEST_INT32_BYTES(RIL_REQUEST_TEST_1),                   /* code */
+    TEST_INT32_BYTES(2),                                    /* id */
+    TEST_LOGGER_DATA
+};
+static const guint8 test_logger_packet_4[] = {
+    TEST_INT32_BYTES(RIL_PACKET_TYPE_SOLICITED_ACK),        /* type */
+    TEST_INT32_BYTES(1)                                     /* id */
+};
+static const guint8 test_logger_packet_5[] = {
+    TEST_INT32_BYTES(RIL_PACKET_TYPE_SOLICITED_ACK_EXP),    /* type */
+    TEST_INT32_BYTES(1),                                    /* id */
+    TEST_INT32_BYTES(RIL_E_SUCCESS),                        /* status */
+    TEST_INT32_BYTES(8),
+    TEST_INT16_BYTES('L'), TEST_INT16_BYTES('O'),
+    TEST_INT16_BYTES('G'), TEST_INT16_BYTES('T'),
+    TEST_INT16_BYTES('E'), TEST_INT16_BYTES('S'),
+    TEST_INT16_BYTES('T'), TEST_INT16_BYTES('0'),
+    TEST_INT32_BYTES(0)
+};
+static const guint8 test_logger_packet_6[] = {
+    TEST_INT32_BYTES(RIL_RESPONSE_ACKNOWLEDGEMENT),         /* code */
+    TEST_INT32_BYTES(3)                                     /* id */
+};
+static const guint8 test_logger_packet_7[] = {
+    TEST_INT32_BYTES(RIL_PACKET_TYPE_SOLICITED),            /* type */
+    TEST_INT32_BYTES(2),                                    /* id */
+    TEST_INT32_BYTES(RIL_E_SUCCESS),                        /* status */
+    TEST_INT32_BYTES(8),
+    TEST_INT16_BYTES('L'), TEST_INT16_BYTES('O'),
+    TEST_INT16_BYTES('G'), TEST_INT16_BYTES('T'),
+    TEST_INT16_BYTES('E'), TEST_INT16_BYTES('S'),
+    TEST_INT16_BYTES('T'), TEST_INT16_BYTES('1'),
+    TEST_INT32_BYTES(0)
+};
+static const guint8 test_logger_packet_8[] = {
+    TEST_INT32_BYTES(RIL_PACKET_TYPE_UNSOLICITED_ACK_EXP),  /* type */
+    TEST_INT32_BYTES(RIL_REQUEST_TEST_2)                    /* id */
+};
+static const guint8 test_logger_packet_9[] = {
+    TEST_INT32_BYTES(RIL_RESPONSE_ACKNOWLEDGEMENT),         /* code */
+    TEST_INT32_BYTES(4)                                     /* id */
+};
+
+static const TestLoggerPacket test_logger_packets[] = {
+    {
+        GRILIO_PACKET_UNSOL,
+        RIL_UNSOL_RIL_CONNECTED,
+        TEST_ARRAY_AND_SIZE(test_logger_packet_1),
+        RIL_UNSOL_HEADER_SIZE
+    },{
+        GRILIO_PACKET_REQ,
+        RIL_REQUEST_TEST,
+        TEST_ARRAY_AND_SIZE(test_logger_packet_2),
+        RIL_REQUEST_HEADER_SIZE
+    },{
+        GRILIO_PACKET_REQ,
+        RIL_REQUEST_TEST_1,
+        TEST_ARRAY_AND_SIZE(test_logger_packet_3),
+        RIL_REQUEST_HEADER_SIZE
+    },{
+        GRILIO_PACKET_ACK,
+        0,
+        TEST_ARRAY_AND_SIZE(test_logger_packet_4),
+        RIL_ACK_HEADER_SIZE
+    },{
+        GRILIO_PACKET_RESP_ACK_EXP,
+        0,
+        TEST_ARRAY_AND_SIZE(test_logger_packet_5),
+        RIL_RESPONSE_HEADER_SIZE
+    },{
+        GRILIO_PACKET_REQ,
+        RIL_RESPONSE_ACKNOWLEDGEMENT,
+        TEST_ARRAY_AND_SIZE(test_logger_packet_6),
+        RIL_REQUEST_HEADER_SIZE
+    },{
+        GRILIO_PACKET_RESP,
+        0,
+        TEST_ARRAY_AND_SIZE(test_logger_packet_7),
+        RIL_RESPONSE_HEADER_SIZE
+    },{
+        GRILIO_PACKET_UNSOL_ACK_EXP,
+        RIL_REQUEST_TEST_2,
+        TEST_ARRAY_AND_SIZE(test_logger_packet_8),
+        RIL_UNSOL_HEADER_SIZE
+    },{
+        GRILIO_PACKET_REQ,
+        RIL_RESPONSE_ACKNOWLEDGEMENT,
+        TEST_ARRAY_AND_SIZE(test_logger_packet_9),
+        RIL_ACK_HEADER_SIZE
+    }
+};
+
 typedef struct test_logger_data {
     Test test;
-    guint test_log;
-    guint bytes_in;
-    guint bytes_out;
+    guint count;
+    guint count2;
+    guint reqid[2];
 } TestLogger;
 
 static
@@ -1318,25 +1773,88 @@ test_logger_cb(
     void* user_data)
 {
     TestLogger* log = user_data;
-    if (type == GRILIO_PACKET_REQ) {
-        log->bytes_out += len;
-        GDEBUG("%u bytes out (total %u)", len, log->bytes_out);
-    } else {
-        log->bytes_in += len;
-        GDEBUG("%u bytes in (total %u)", len, log->bytes_in);
-    }
+    const TestLoggerPacket* expect = test_logger_packets + (log->count++);
 
-    /*
-     * Out:
-     * 8 bytes RIL_REQUEST_TEST request
-     *
-     * In:
-     * 16 bytes RIL_UNSOL_RIL_CONNECTED response
-     * 32 bytes RIL_REQUEST_TEST
-     */
-    if (log->bytes_in == (16 + 32) && log->bytes_out == 8) {
+    GDEBUG("Packet #%u", log->count);
+    g_assert(log->count <= G_N_ELEMENTS(test_logger_packets));
+    g_assert(id || type == GRILIO_PACKET_UNSOL || type == GRILIO_PACKET_UNSOL_ACK_EXP);
+    g_assert(type == expect->type);
+    g_assert(code == expect->code);
+    g_assert(len == expect->len);
+    g_assert(!memcmp(data, expect->data, 4));
+    g_assert(!memcmp(((guint8*)data) + 8, expect->data + 8, len - 8));
+}
+
+static
+void
+test_logger1_cb(
+    GRilIoChannel* io,
+    GRILIO_PACKET_TYPE type,
+    guint id,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestLogger* log = user_data;
+    /* Count has already need incremented by test_logger_cb */
+    const TestLoggerPacket* expect = test_logger_packets + log->count - 1;
+
+    GDEBUG("Packet #%u", log->count);
+    g_assert(log->count <= G_N_ELEMENTS(test_logger_packets));
+    g_assert(id || type == GRILIO_PACKET_UNSOL || type == GRILIO_PACKET_UNSOL_ACK_EXP);
+    g_assert(type == expect->type);
+    g_assert(code == expect->code);
+    g_assert(len == expect->len);
+    g_assert(!memcmp(data, expect->data, 4));
+    g_assert(!memcmp(((guint8*)data) + 8, expect->data + 8, len - 8));
+}
+
+static
+void
+test_logger2_cb(
+    GRilIoChannel* io,
+    GRILIO_PACKET_TYPE type,
+    guint id,
+    guint code,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestLogger* log = user_data;
+    const TestLoggerPacket* expect = test_logger_packets + (log->count2++);
+
+    g_assert(log->count2 <= G_N_ELEMENTS(test_logger_packets));
+    g_assert(id || type == GRILIO_PACKET_UNSOL || type == GRILIO_PACKET_UNSOL_ACK_EXP);
+    g_assert(type == expect->type);
+    g_assert(code == expect->code);
+    g_assert(len + expect->header_len == expect->len);
+    g_assert(!memcmp(data, expect->data + expect->header_len, len));
+
+    if (log->count2 == G_N_ELEMENTS(test_logger_packets)) {
         g_main_loop_quit(log->test.loop);
     }
+}
+
+static
+void
+test_logger_resp(
+    guint code,
+    guint id,
+    const void* data,
+    guint len,
+    void* user_data)
+{
+    TestLogger* log = user_data;
+    Test* test = &log->test;
+
+    grilio_test_server_add_ack(test->server, log->reqid[0]);
+    test_basic_response_ok_ack_exp(test->server, "LOGTEST0", log->reqid[0]);
+    test_basic_response_ok(test->server, "LOGTEST1", log->reqid[1]);
+    grilio_test_server_add_unsol_ack_exp(test->server, NULL, RIL_REQUEST_TEST_2);
+
+    /* Clear the name to improve branch coverage */
+    grilio_channel_set_name(test->io, NULL);
 }
 
 static
@@ -1346,37 +1864,48 @@ test_logger(
 {
     TestLogger* log = test_new(TestLogger, "Logger");
     Test* test = &log->test;
-    guint id[3];
+    guint logid[4];
     int level = GLOG_LEVEL_ALWAYS;
+    static const guint8 data[] = { TEST_LOGGER_DATA };
 
+    /* Test NULL resistance */
     g_assert(!grilio_channel_add_logger(NULL, NULL, NULL));
     g_assert(!grilio_channel_add_logger(test->io, NULL, NULL));
+    g_assert(!grilio_channel_add_logger2(NULL, NULL, NULL));
+    g_assert(!grilio_channel_add_logger2(test->io, NULL, NULL));
+    grilio_channel_remove_logger(NULL, 0);
 
-    /* Remove default logger and re-add it with GLOG_LEVEL_ALWAYS, mainly
-     * to improve code coverage. Remove it twice to make sure that invalid
-     * logger ids are handled properly, i.e. ignored. */
-    grilio_channel_remove_logger(test->io, test->log);
-    grilio_channel_remove_logger(test->io, test->log);
-    test->log = grilio_channel_add_default_logger(test->io, level);
-    log->test_log = grilio_channel_add_logger(test->io, test_logger_cb, log);
-    g_assert(test->log);
-    g_assert(log->test_log);
+    /* Add another default logger with GLOG_LEVEL_ALWAYS, mainly to
+     * improve code coverage. */
+    logid[0] = grilio_channel_add_default_logger(test->io, level);
+    logid[1] = grilio_channel_add_logger(test->io, test_logger_cb, log);
+    logid[2] = grilio_channel_add_logger(test->io, test_logger1_cb, log);
+    logid[3] = grilio_channel_add_logger2(test->io, test_logger2_cb, log);
+    g_assert(logid[0]);
+    g_assert(logid[1]);
+    g_assert(logid[2]);
+    g_assert(logid[3]);
     gutil_log(GLOG_MODULE_CURRENT, level, "%s", "");
 
-    id[0] = test_basic_request(test, test_logger_response);
-    id[1] = test_basic_request(test, test_logger_response);
-    id[2] = test_basic_request(test, test_logger_response);
-    grilio_channel_cancel_request(test->io, id[0], TRUE);
-    grilio_channel_cancel_request(test->io, id[1], FALSE);
-    g_assert(id[0]);
-    g_assert(id[1]);
-    g_assert(id[2]);
-    g_assert(test_basic_response_ok(test->server, "LOGTEST", id[2]));
+    grilio_test_server_add_request_func(test->server,
+        RIL_REQUEST_TEST_1, test_logger_resp, log);
+
+    log->reqid[0] = test_basic_request(test, test_logger_response);
+    log->reqid[1] = test_basic_request_full(test, RIL_REQUEST_TEST_1,
+        data, sizeof(data), test_logger_response);
+    g_assert(log->reqid[0]);
+    g_assert(log->reqid[1]);
 
     /* Run the test */
     g_main_loop_run(test->loop);
 
-    grilio_channel_remove_logger(test->io, log->test_log);
+    /* Remove this one twice to make sure that invalid logger ids are
+     * handled properly, i.e. ignored. */
+    grilio_channel_remove_logger(test->io, logid[0]);
+    grilio_channel_remove_logger(test->io, logid[0]);
+    /* Leave one logger registered, let grilio_channel_finalize free it */
+    grilio_channel_remove_logger(test->io, logid[1]);
+    grilio_channel_remove_logger(test->io, logid[3]);
     test_free(test);
 }
 
@@ -1539,12 +2068,12 @@ test_handlers(
 }
 
 /*==========================================================================*
- * EarlyResp
+ * InvalidResp
  *==========================================================================*/
 
 static
 void
-test_early_resp_no_completion(
+test_invalid_resp_no_completion(
     GRilIoChannel* io,
     int status,
     const void* data,
@@ -1559,7 +2088,7 @@ test_early_resp_no_completion(
 
 static
 void
-test_early_resp_req2_completion(
+test_invalid_resp_req2_completion(
     GRilIoChannel* io,
     int status,
     const void* data,
@@ -1574,22 +2103,23 @@ test_early_resp_req2_completion(
 
 static
 void
-test_early_resp(
+test_invalid_resp(
     void)
 {
-    Test* test = test_new(Test, "EarlyResp");
+    Test* test = test_new(Test, "InvalidResp");
     GRilIoRequest* req = grilio_request_new();
     int resp_count = 0;
 
     /* This one is going to end the test (eventually). */
     const guint id1 = grilio_channel_send_request_full(test->io, NULL,
-        RIL_REQUEST_TEST, test_early_resp_req2_completion, NULL, test);
-    /* Response to this request will arrive before the request has been
-     * sent, so it will be ignored. */
-    const guint id2 = grilio_channel_send_request_full(test->io, req,
-        RIL_REQUEST_TEST, test_early_resp_no_completion, NULL, &resp_count);
+        RIL_REQUEST_TEST, test_invalid_resp_req2_completion, NULL, test);
 
-    g_assert(test_basic_response_ok(test->server, "IGNORE", id2));
+    /* Response to this request will never arrive. */
+    grilio_channel_send_request_full(test->io, req,
+        RIL_REQUEST_TEST, test_invalid_resp_no_completion, NULL, &resp_count);
+
+    /* INT_MAX is not a valid request id */
+    g_assert(test_basic_response_ok(test->server, "IGNORE", INT_MAX));
     g_assert(test_basic_response_ok(test->server, "DONE", id1));
 
     /* Run the test */
@@ -1643,11 +2173,13 @@ test_retry1_continue(
 {
     Test* test = user_data;
     TestRetry1* retry = G_CAST(test, TestRetry1, test);
+    guint serial = grilio_request_serial(retry->req2);
 
     /* This should result in req2 getting completed */
     GDEBUG("Continuing...");
-    grilio_test_server_add_response(test->server, NULL,
-        retry->req2->current_id, RIL_E_REQUEST_NOT_SUPPORTED);
+    g_assert(serial != grilio_request_id(retry->req2));
+    grilio_test_server_add_response(test->server, NULL, serial,
+        RIL_E_REQUEST_NOT_SUPPORTED);
 }
 
 static
@@ -2950,19 +3482,6 @@ test_block_timeout_req1_completed(
 
 static
 void
-test_block_timeout_ack(
-    guint code,
-    guint id,
-    const void* data,
-    guint len,
-    void* user_data)
-{
-    Test* test = user_data;
-    g_main_loop_quit(test->loop);
-}
-
-static
-void
 test_block_timeout(
     void)
 {
@@ -2974,7 +3493,7 @@ test_block_timeout(
 
     /* Reply to the second one (and ack it), let the first one to time out */
     grilio_test_server_add_request_func(test->server,
-        RIL_RESPONSE_ACKNOWLEDGEMENT, test_block_timeout_ack, test);
+        RIL_RESPONSE_ACKNOWLEDGEMENT, test_response_quit, test);
     grilio_test_server_add_request_func(test->server, RIL_REQUEST_TEST_2,
         test_response_empty_ok_ack, test);
 
@@ -3278,21 +3797,25 @@ int main(int argc, char* argv[])
     G_GNUC_END_IGNORE_DEPRECATIONS;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_PREFIX "Connected", test_connected);
+    g_test_add_func(TEST_PREFIX "IdTimeout", test_id_timeout);
     g_test_add_func(TEST_PREFIX "Basic", test_basic);
+    g_test_add_func(TEST_PREFIX "Enabled", test_enabled);
     g_test_add_func(TEST_PREFIX "Inject", test_inject);
     g_test_add_func(TEST_PREFIX "Queue", test_queue);
+    g_test_add_func(TEST_PREFIX "AsyncWrite", test_async_write);
     g_test_add_func(TEST_PREFIX "Transaction1", test_transaction1);
     g_test_add_func(TEST_PREFIX "Transaction2", test_transaction2);
     g_test_add_func(TEST_PREFIX "WriteError1", test_write_error1);
     g_test_add_func(TEST_PREFIX "WriteError2", test_write_error2);
     g_test_add_func(TEST_PREFIX "WriteError3", test_write_error3);
+    g_test_add_func(TEST_PREFIX "WriteTimeout", test_write_timeout);
     g_test_add_func(TEST_PREFIX "Disconnect", test_disconnect);
     g_test_add_func(TEST_PREFIX "ShortPacket", test_short_packet);
     g_test_add_func(TEST_PREFIX "ShortResponse", test_short_response);
     g_test_add_func(TEST_PREFIX "ShortResponse2", test_short_response2);
     g_test_add_func(TEST_PREFIX "Logger", test_logger);
     g_test_add_func(TEST_PREFIX "Handlers", test_handlers);
-    g_test_add_func(TEST_PREFIX "EarlyResp", test_early_resp);
+    g_test_add_func(TEST_PREFIX "InvalidResp", test_invalid_resp);
     g_test_add_func(TEST_PREFIX "Retry1", test_retry1);
     g_test_add_func(TEST_PREFIX "Retry2", test_retry2);
     g_test_add_func(TEST_PREFIX "Retry3", test_retry3);

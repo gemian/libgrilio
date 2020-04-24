@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2017 Jolla Ltd.
+ * Copyright (C) 2015-2018 Jolla Ltd.
  * Contact: Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
@@ -31,6 +31,7 @@
  */
 
 #include "grilio_p.h"
+#include "grilio_encode.h"
 #include "grilio_log.h"
 
 #include <gutil_macros.h>
@@ -61,8 +62,9 @@ grilio_request_sized_new(
     g_atomic_int_set(&req->refcount, 1);
     req->timeout = GRILIO_TIMEOUT_DEFAULT;
     req->retry = grilio_request_default_retry;
-    req->bytes = g_byte_array_sized_new(RIL_REQUEST_HEADER_SIZE + size);
-    g_byte_array_set_size(req->bytes, RIL_REQUEST_HEADER_SIZE);
+    if (size) {
+        req->bytes = g_byte_array_sized_new(size);
+    }
     return req;
 }
 
@@ -119,7 +121,9 @@ grilio_request_free(
     if (req->destroy) {
         req->destroy(req->user_data);
     }
-    g_byte_array_unref(req->bytes);
+    if (req->bytes) {
+        g_byte_array_unref(req->bytes);
+    }
     g_slice_free(GRilIoRequest, req);
 }
 
@@ -213,6 +217,13 @@ grilio_request_id(
     return G_LIKELY(req) ? req->id : 0;
 }
 
+guint
+grilio_request_serial(
+    GRilIoRequest* req)
+{
+    return G_LIKELY(req) ? req->current_id : 0;
+}
+
 void
 grilio_request_unref_proc(
     gpointer data)
@@ -226,8 +237,7 @@ grilio_request_append_byte(
     guchar value)
 {
     if (G_LIKELY(req)) {
-        g_byte_array_set_size(req->bytes, req->bytes->len + 1);
-        req->bytes->data[req->bytes->len-1] = value;
+        req->bytes = grilio_encode_byte(req->bytes, value);
     }
 }
 
@@ -238,9 +248,7 @@ grilio_request_append_bytes(
     guint len)
 {
     if (G_LIKELY(req) && data && len > 0) {
-        const gsize old_size = req->bytes->len;
-        g_byte_array_set_size(req->bytes, old_size + len);
-        memcpy(req->bytes->data + old_size, data, len);
+        req->bytes = grilio_encode_bytes(req->bytes, data, len);
     }
 }
 
@@ -250,10 +258,7 @@ grilio_request_append_int32(
     guint32 value)
 {
     if (G_LIKELY(req)) {
-        guint32* ptr;
-        g_byte_array_set_size(req->bytes, req->bytes->len + 4);
-        ptr = (guint32*)(req->bytes->data + (req->bytes->len-4));
-        *ptr = GUINT32_TO_RIL(value);
+        req->bytes = grilio_encode_int32(req->bytes, value);
     }
 }
 
@@ -261,9 +266,11 @@ void
 grilio_request_append_int32_array(
     GRilIoRequest* req,
     const gint32* values,
-    guint n)
+    guint count)
 {
-    return grilio_request_append_uint32_array(req, (const guint32*)values, n);
+    if (G_LIKELY(req)) {
+        req->bytes = grilio_encode_int32_values(req->bytes, values, count);
+    }
 }
 
 void
@@ -273,10 +280,7 @@ grilio_request_append_uint32_array(
     guint count)
 {
     if (G_LIKELY(req)) {
-        guint i;
-        for (i=0; i<count; i++) {
-            grilio_request_append_int32(req, values[i]);
-        }
+        req->bytes = grilio_encode_uint32_values(req->bytes, values, count);
     }
 }
 
@@ -285,7 +289,9 @@ grilio_request_append_utf8(
     GRilIoRequest* req,
     const char* utf8)
 {
-    grilio_request_append_utf8_chars(req, utf8, utf8 ? strlen(utf8) : 0);
+    if (G_LIKELY(req)) {
+        req->bytes = grilio_encode_utf8(req->bytes, utf8);
+    }
 }
 
 void
@@ -295,59 +301,7 @@ grilio_request_append_utf8_chars(
     gssize num_bytes)
 {
     if (G_LIKELY(req)) {
-        const gsize old_size = req->bytes->len;
-        if (utf8) {
-            const char* end = utf8;
-            g_utf8_validate(utf8, num_bytes, &end);
-            num_bytes = end - utf8;
-        } else {
-            num_bytes = 0;
-        }
-        if (num_bytes > 0) {
-            glong len = g_utf8_strlen(utf8, num_bytes);
-            gsize padded_len = G_ALIGN4((len+1)*2);
-            guint32* len_ptr;
-            gunichar2* utf16_ptr;
-
-            /* Preallocate space */
-            g_byte_array_set_size(req->bytes, old_size + padded_len + 4);
-            len_ptr = (guint32*)(req->bytes->data + old_size);
-            utf16_ptr = (gunichar2*)(len_ptr + 1);
-
-            /* TODO: this could be optimized for ASCII strings, i.e. if
-             * len equals num_bytes */
-            if (len > 0) {
-                glong utf16_len = 0;
-                gunichar2* utf16 = g_utf8_to_utf16(utf8, num_bytes, NULL,
-                    &utf16_len, NULL);
-                if (utf16) {
-                    len = utf16_len;
-                    padded_len = G_ALIGN4((len+1)*2);
-                    memcpy(utf16_ptr, utf16, (len+1)*2);
-                    g_free(utf16);
-                }
-            }
-
-            /* Actual length */
-            *len_ptr = GUINT32_TO_RIL(len);
-
-            /* Zero padding */
-            if (padded_len - (len + 1)*2) {
-                memset(utf16_ptr + (len + 1), 0, padded_len - (len + 1)*2);
-            }
-
-            /* Correct the packet size if necessaary */
-            g_byte_array_set_size(req->bytes, old_size + padded_len + 4);
-        } else if (utf8) {
-            /* Empty string */
-            guint16* ptr16;
-            g_byte_array_set_size(req->bytes, old_size + 8);
-            ptr16 = (guint16*)(req->bytes->data + old_size);
-            ptr16[0] = ptr16[1] = ptr16[2] = 0; ptr16[3] = 0xffff;
-        } else {
-            /* NULL string */
-            grilio_request_append_int32(req, -1);
-        }
+        req->bytes = grilio_encode_utf8_chars(req->bytes, utf8, num_bytes);
     }
 }
 
@@ -369,33 +323,25 @@ grilio_request_append_format_va(
     const char* format,
     va_list va)
 {
-    char* text = g_strdup_vprintf(format, va);
-    grilio_request_append_utf8(req, text);
-    g_free(text);
+    if (G_LIKELY(req)) {
+        char* text = g_strdup_vprintf(format, va);
+        grilio_request_append_utf8(req, text);
+        g_free(text);
+    }
 }
 
 const void*
 grilio_request_data(
     GRilIoRequest* req)
 {
-    if (G_LIKELY(req)) {
-        GASSERT(req->bytes->len >= RIL_REQUEST_HEADER_SIZE);
-        return req->bytes->data + RIL_REQUEST_HEADER_SIZE;
-    } else {
-        return NULL;
-    }
+    return (G_LIKELY(req) && req->bytes) ? req->bytes->data : NULL;
 }
 
 guint
 grilio_request_size(
     GRilIoRequest* req)
 {
-    if (G_LIKELY(req)) {
-        GASSERT(req->bytes->len >= RIL_REQUEST_HEADER_SIZE);
-        return req->bytes->len - RIL_REQUEST_HEADER_SIZE;
-    } else {
-        return 0;
-    }
+    return (G_LIKELY(req) && req->bytes) ? req->bytes->len : 0;
 }
 
 /*
