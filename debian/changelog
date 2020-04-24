@@ -1,3 +1,9 @@
+libgrilio (1.0.36+gemian1) buster; urgency=medium
+
+  * Sync with upstream
+
+ -- TheKit <thekit@disroot.org>  Fri, 24 Apr 2020 21:58:59 +0200
+
 libgrilio (1.0.36) unstable; urgency=low
 
   * Allow use of CC defined by build system
