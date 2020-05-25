@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2018-2019 Jolla Ltd.
- * Copyright (C) 2018-2019 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2018-2020 Jolla Ltd.
+ * Copyright (C) 2018-2020 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -731,7 +731,7 @@ grilio_transport_socket_new_path(
             struct sockaddr_un addr;
             memset(&addr, 0, sizeof(addr));
             addr.sun_family = AF_UNIX;
-            strncpy(addr.sun_path, path, sizeof(addr.sun_path));
+            strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
             if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
                 GRilIoTransport* transport =
                     grilio_transport_socket_new(fd, sub, TRUE);
