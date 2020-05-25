@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2015-2019 Jolla Ltd.
- * Copyright (C) 2015-2019 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2015-2020 Jolla Ltd.
+ * Copyright (C) 2015-2020 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -102,66 +102,66 @@ void
     gboolean timeout,
     gpointer user_data);
 
-G_GNUC_INTERNAL
 void
 grilio_request_unref_proc(
-    gpointer data);
+    gpointer data)
+    G_GNUC_INTERNAL;
 
-G_GNUC_INTERNAL
 void
 grilio_queue_remove(
-    GRilIoRequest* req);
+    GRilIoRequest* req)
+    G_GNUC_INTERNAL;
 
-G_GNUC_INTERNAL
 GRilIoRequest*
 grilio_channel_get_request(
     GRilIoChannel* channel,
-    guint id);
+    guint id)
+    G_GNUC_INTERNAL;
 
-G_GNUC_INTERNAL
 void
 grilio_channel_set_pending_timeout(
     GRilIoChannel* channel,
-    int ms);
+    int ms)
+    G_GNUC_INTERNAL;
 
-G_GNUC_INTERNAL
 GRILIO_TRANSACTION_STATE
 grilio_channel_transaction_start(
     GRilIoChannel* channel,
-    GRilIoQueue* queue);
+    GRilIoQueue* queue)
+    G_GNUC_INTERNAL;
 
-G_GNUC_INTERNAL
 GRILIO_TRANSACTION_STATE
 grilio_channel_transaction_state(
     GRilIoChannel* channel,
-    GRilIoQueue* queue);
+    GRilIoQueue* queue)
+    G_GNUC_INTERNAL;
 
-G_GNUC_INTERNAL
 void
 grilio_channel_transaction_finish(
     GRilIoChannel* channel,
-    GRilIoQueue* queue);
+    GRilIoQueue* queue)
+    G_GNUC_INTERNAL;
 
-G_GNUC_INTERNAL
 guint
 grilio_channel_get_id(
-    GRilIoChannel* channel);
+    GRilIoChannel* channel)
+    G_GNUC_INTERNAL;
 
-G_GNUC_INTERNAL
 gboolean
 grilio_channel_release_id(
     GRilIoChannel* channel,
-    guint id);
+    guint id)
+    G_GNUC_INTERNAL;
 
-G_GNUC_INTERNAL
 guint
 grilio_channel_get_id_with_timeout(
     GRilIoChannel* channel,
     guint timeout_ms,
     GRilIoChannelIdCleanupFunc cleanup,
-    gpointer user_data);
+    gpointer user_data)
+    G_GNUC_INTERNAL;
 
-G_INLINE_FUNC gboolean
+static inline gboolean
 grilio_request_can_retry(GRilIoRequest* req)
     { return req->max_retries < 0 || req->max_retries > req->retry_count; }
 
