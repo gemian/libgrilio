@@ -1,3 +1,10 @@
+libgrilio (1.0.37) unstable; urgency=low
+
+  * Fixed various compilation warnings
+  * Respect arch specific lib dir
+
+ -- Slava Monich <slava.monich@jolla.com>  Mon, 25 May 2020 18:40:14 +0300
+
 libgrilio (1.0.36) unstable; urgency=low
 
   * Allow use of CC defined by build system
