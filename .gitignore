@@ -7,6 +7,7 @@ debian/libgrilio
 debian/libgrilio-dev
 debian/*.debhelper.log
 debian/*.debhelper
+debian/*.install
 debian/*.substvars
 debian/tmp
 documentation.list

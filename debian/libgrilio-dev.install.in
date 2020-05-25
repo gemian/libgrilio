@@ -1,0 +1,3 @@
+debian/tmp/@LIBDIR@/libgrilio.so @LIBDIR@
+debian/tmp/@LIBDIR@/pkgconfig/libgrilio.pc @LIBDIR@/pkgconfig
+debian/tmp/usr/include/* usr/include/
