@@ -1,3 +1,9 @@
+libgrilio (1.0.39) unstable; urgency=low
+
+  * Added grilio_channel_lookup()
+
+ -- Slava Monich <slava.monich@jolla.com>  Thu, 11 Jun 2020 21:33:39 +0300
+
 libgrilio (1.0.38) unstable; urgency=low
 
   * Added grilio_parser_get_bytes()
