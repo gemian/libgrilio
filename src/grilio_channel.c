@@ -139,6 +139,7 @@ enum grilio_channel_signal {
 #define SIGNAL_UNSOL_EVENT_DETAIL_MAX_LENGTH    (8)
 
 static guint grilio_channel_signals[SIGNAL_COUNT] = { 0 };
+static GHashTable* grilio_channel_table = NULL;
 
 #define NEW_SIGNAL_NO_ARGS(type,X) \
     grilio_channel_signals[SIGNAL_##X] = g_signal_new(SIGNAL_##X##_NAME, \
@@ -189,6 +190,24 @@ grilio_channel_schedule_write(
 /*==========================================================================*
  * Implementation
  *==========================================================================*/
+
+static
+void
+grilio_channel_destroyed(
+    gpointer key,
+    GObject* channel)
+{
+    GASSERT(grilio_channel_table);
+    GDEBUG("Channel \"%s\" has been destroyed", (char*) key);
+    if (grilio_channel_table) {
+        GASSERT(g_hash_table_lookup(grilio_channel_table, key) == channel);
+        g_hash_table_remove(grilio_channel_table, key);
+        if (g_hash_table_size(grilio_channel_table) == 0) {
+            g_hash_table_unref(grilio_channel_table);
+            grilio_channel_table = NULL;
+        }
+    }
+}
 
 static
 gboolean
@@ -1413,12 +1432,53 @@ grilio_channel_set_name(
     GRilIoChannel* self,
     const char* name)
 {
-    if (G_LIKELY(self)) {
+    if (G_LIKELY(self) && g_strcmp0(name, self->name)) {
         GRilIoChannelPriv* priv = self->priv;
 
+        /* Remove old and conflicting entries, if there are any */
+        if (grilio_channel_table) {
+            gpointer key, value;
+
+            if (self->name && g_hash_table_lookup_extended(grilio_channel_table,
+                self->name, &key, &value) && value == self) {
+                /* Our previous entry */
+                g_object_weak_unref(value, grilio_channel_destroyed, key);
+                g_hash_table_remove(grilio_channel_table, key);
+            }
+            if (name && g_hash_table_lookup_extended(grilio_channel_table,
+                name, &key, &value)) {
+                /* Conflicting entry */
+                g_object_weak_unref(value, grilio_channel_destroyed, key);
+                g_hash_table_remove(grilio_channel_table, key);
+            }
+        }
+
+        /* Actually update the name */
         grilio_transport_set_name(priv->transport, name);
         self->name = priv->transport->name;
+
+        /* Store weak reference in the global table */
+        if (name) {
+            gpointer key = g_strdup(name);
+
+            if (!grilio_channel_table) {
+                grilio_channel_table = g_hash_table_new_full(g_str_hash,
+                    g_str_equal, g_free, NULL);
+            }
+            g_hash_table_insert(grilio_channel_table, key, self);
+            g_object_weak_ref(G_OBJECT(self), grilio_channel_destroyed, key);
+        }
     }
+}
+
+GRilIoChannel*
+grilio_channel_lookup(
+    const char* name) /* Since 1.0.39 */
+{
+    if (G_LIKELY(name) && grilio_channel_table) {
+        return g_hash_table_lookup(grilio_channel_table, name);
+    }
+    return NULL;
 }
 
 guint
