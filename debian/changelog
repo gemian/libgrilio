@@ -1,3 +1,9 @@
+libgrilio (1.0.40) unstable; urgency=low
+
+  * Make library executable on RPM based systems
+
+ -- Slava Monich <slava.monich@jolla.com>  Tue, 01 Sep 2020 23:56:15 +0300
+
 libgrilio (1.0.39) unstable; urgency=low
 
   * Added grilio_channel_lookup()

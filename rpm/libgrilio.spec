@@ -1,8 +1,7 @@
 Name: libgrilio
-Version: 1.0.39
+Version: 1.0.40
 Release: 0
 Summary: RIL I/O library
-Group: Development/Libraries
 License: BSD
 URL: https://git.sailfishos.org/mer-core/libgrilio
 Source: %{name}-%{version}.tar.bz2
