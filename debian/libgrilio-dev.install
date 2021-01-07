@@ -1,3 +1,0 @@
-debian/tmp/usr/lib/libgrilio.so usr/lib
-include/*.h usr/include/grilio
-build/libgrilio.pc usr/lib/pkgconfig

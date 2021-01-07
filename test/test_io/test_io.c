@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2015-2019 Jolla Ltd.
- * Copyright (C) 2015-2019 Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2015-2020 Jolla Ltd.
+ * Copyright (C) 2015-2020 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -156,7 +156,6 @@ test_alloc(
     test->server = server;
     test->transport = grilio_transport_socket_new(fd, "SUB1", FALSE);
     test->io = grilio_channel_new(test->transport);
-    grilio_channel_set_name(test->io, "TEST");
     test->log = grilio_channel_add_default_logger(test->io, GLOG_LEVEL_VERBOSE);
     if (!(test_opt.flags & TEST_FLAG_DEBUG)) {
         test->timeout_id = g_timeout_add_seconds(TEST_TIMEOUT,
@@ -444,13 +443,40 @@ test_basic(
     GRilIoRequest* req = grilio_request_new();
     guint id, pending_event_count = 0;
     guint32 invalid[3];
+    const char* name = "TEST";
+    const char* name1 = "TEST1";
     gulong pending_id = grilio_channel_add_pending_changed_handler(test->io,
         test_basic_inc, &pending_event_count);
 
-    grilio_channel_set_name(test->io, "");
-    g_assert(!g_strcmp0(test->io->name, ""));
+    GRilIoTestServer* tmp_server = grilio_test_server_new(TRUE);
+    GRilIoTransport* tmp_trans = grilio_transport_socket_new
+        (grilio_test_server_fd(tmp_server), NULL, FALSE);
+    GRilIoChannel* tmp_io = grilio_channel_new(tmp_trans);
+
+    /* Test naming and global channel registry */
+    g_assert(!grilio_channel_lookup(NULL));
+    g_assert(!grilio_channel_lookup(name)); /* It's not there */
+    grilio_channel_set_name(test->io, name); /* Overwrite the previous one */
+    grilio_channel_set_name(test->io, name); /* Second time does nothing */
+    g_assert(!g_strcmp0(test->io->name, name));
+    g_assert(grilio_channel_lookup(name) == test->io); /* Now it's there */
     grilio_channel_set_name(test->io, NULL);
     g_assert(!test->io->name);
+    g_assert(!grilio_channel_lookup(name)); /* It's not there anymore */
+    grilio_channel_set_name(test->io, name); /* Set it again */
+    g_assert(grilio_channel_lookup(name) == test->io); /* It's there again */
+    grilio_channel_set_name(tmp_io, name); /* Overwrite it */
+    g_assert(grilio_channel_lookup(name) == tmp_io); /* Overwritten */
+    grilio_channel_set_name(test->io, NULL); /* Clear this name */
+    g_assert(grilio_channel_lookup(name) == tmp_io); /* This one still there */
+    grilio_channel_set_name(test->io, name);
+    grilio_channel_set_name(tmp_io, name1); /* Set different name for it */
+
+    grilio_channel_unref(tmp_io);
+    grilio_transport_unref(tmp_trans);
+    grilio_test_server_free(tmp_server);
+    g_assert(!grilio_channel_lookup(name1)); /* Gone */
+    g_assert(grilio_channel_lookup(name) == test->io); /* Still there */
 
     /* Test NULL resistance */
     g_assert(!grilio_request_retry_count(NULL));

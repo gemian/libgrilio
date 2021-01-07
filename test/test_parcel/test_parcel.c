@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2015-2018 Jolla Ltd.
- * Contact: Slava Monich <slava.monich@jolla.com>
+ * Copyright (C) 2015-2020 Jolla Ltd.
+ * Copyright (C) 2015-2020 Slava Monich <slava.monich@jolla.com>
  *
  * You may use this file under the terms of BSD license as follows:
  *
@@ -13,9 +13,9 @@
  *   2. Redistributions in binary form must reproduce the above copyright
  *      notice, this list of conditions and the following disclaimer in the
  *      documentation and/or other materials provided with the distribution.
- *   3. Neither the name of Jolla Ltd nor the names of its contributors may
- *      be used to endorse or promote products derived from this software
- *      without specific prior written permission.
+ *   3. Neither the names of the copyright holders nor the names of its
+ *      contributors may be used to endorse or promote products derived
+ *      from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -131,6 +131,28 @@ test_basic_types(
 
     grilio_request_unref(req);
     grilio_request_unref(req2);
+}
+
+/*==========================================================================*
+ * RawBytes
+ *==========================================================================*/
+
+static
+void
+test_raw_bytes(
+    void)
+{
+    const static guchar bytes[4] = { 0x01, 0x02, 0x03, 0x04 };
+    GRilIoParser parser;
+
+    grilio_parser_init(&parser, bytes, sizeof(bytes));
+    g_assert(grilio_parser_get_bytes(&parser, 0) == bytes);
+    g_assert(grilio_parser_get_bytes(&parser, 3) == bytes);
+    g_assert_cmpuint(grilio_parser_bytes_remaining(&parser), == ,1);
+    g_assert(!grilio_parser_get_bytes(&parser, 2));
+    g_assert(grilio_parser_get_bytes(&parser, 1) == bytes + 3);
+    g_assert(!grilio_parser_get_bytes(&parser, 0)); /* We are at end */
+    g_assert(grilio_parser_at_end(&parser));
 }
 
 /*==========================================================================*
@@ -492,6 +514,7 @@ int main(int argc, char* argv[])
     TestOpt test_opt;
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_PREFIX "BasicTypes", test_basic_types);
+    g_test_add_func(TEST_PREFIX "RawBytes", test_raw_bytes);
     g_test_add_func(TEST_PREFIX "Strings", test_strings);
     g_test_add_func(TEST_PREFIX "Split", test_split);
     g_test_add_func(TEST_PREFIX "Broken", test_broken);
